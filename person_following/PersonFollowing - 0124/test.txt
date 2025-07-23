@@ -1,0 +1,11 @@
+{
+    "UDP_address":"127.0.0.1",
+    "UDP_port":50100,
+    "URG_port":"COM3",
+
+    "offset_pos_x":0.1,
+    "offset_pos_y":-0.1,
+    "offset_pos_t":3.14159,
+    "offset_reverse":false,
+    "time_interval_min":100
+}
