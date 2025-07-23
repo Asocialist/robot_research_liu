@@ -1,0 +1,499 @@
+//2台のLiDARのmsgから人を追跡する
+
+#include <vector>
+#include <stdio.h>
+#include <string.h>
+#include <opencv2/opencv.hpp>
+
+//#include <ctype.h>
+// #include "MyEllipseNormalEvaluation.h"
+// #include "MyCondensation.h"
+#include "EllipseTracker.h"
+
+#include "ros/ros.h"
+#include "json11.hpp"
+#include "sensor_msgs/LaserScan.h"
+#include "geometry_msgs/Pose2D.h"
+
+// ////////////////
+// // Defines
+// ////////////////
+
+#define M_PI 3.141592653589793238
+
+// ////////////////
+// // Variables
+// ////////////////
+
+// マウスイベントの取得
+bool lbPressed = false;
+int lbX = 0;
+int lbY = 0;
+
+// マウスコールバック関数
+void mouseCallback(int event, int x, int y, int flag, void *param)
+{
+	if (event == cv::EVENT_LBUTTONDOWN)
+	{
+		lbPressed = true;
+		lbX = x;
+		lbY = y;
+	}
+	return;
+}
+
+// 定数
+float Scale = 0.1f;
+cv::Size windowSize;
+
+class ScanMessageHnadler
+{
+	protected: // 定数
+	static constexpr int DEF_SCAN_STEP_MAX = 1080;
+	static constexpr double DEF_ANGLE_OFFSET = M_PI;
+	public:
+	static constexpr double SCAN_DISTANCE_MAGNIFICATION = 1000.0;
+
+	public: // 設定(グローバル)
+	static double RetroreflectiveIntensity;
+
+	public: // 設定(ローカル)
+	std::string topicName;
+	double offsetX = 0;
+	double offsetY = 0;
+	double offsetT = 0;
+
+	public: // 取得データ
+	std::vector<int> urgDistance;
+	std::vector<int> urgIntensity;
+	std::vector<int> urgIntensityRaw;
+	std::vector<double> sinVal;
+	std::vector<double> cosVal;
+	std::vector<cv::Point2d> drawPosition;
+
+
+	public:
+	void TopicCallbackFunction(const sensor_msgs::LaserScan::ConstPtr &msg){
+		if(dataSize != msg->ranges.size()){
+			urgDistance.resize(msg->ranges.size());
+			urgIntensity.resize(msg->ranges.size());
+			CreateTrigonometricTable(msg->angle_min, msg->angle_increment, msg->ranges.size());
+			dataSize = msg->ranges.size();
+		}
+		int sizeScan = msg->ranges.size();
+		for (int i = 0; i < sizeScan; i++)
+		{
+			urgDistance[i] = msg->ranges[i] * SCAN_DISTANCE_MAGNIFICATION;
+			urgIntensity[i] = msg->intensities[i];
+		}
+
+		IntensityNormalization();
+		CalcDrawPosition();
+		return;
+	}
+
+	void SetOffset(double x, double y, double th){
+		offsetX = x;
+		offsetY = y;
+		offsetT = th;
+		dataSize = 0;
+	}
+
+	protected:
+	void CreateTrigonometricTable(double angle_min, double angle_increment, int num)
+	{
+		sinVal.resize(num);
+		cosVal.resize(num);
+
+		for(int i = 0; i < num; i ++){
+			sinVal[i] = sin(angle_min + angle_increment * i + offsetT + DEF_ANGLE_OFFSET);
+			cosVal[i] = cos(angle_min + angle_increment * i + offsetT + DEF_ANGLE_OFFSET);
+		}
+	}
+
+	void IntensityNormalization()
+	{
+		// 反射強度正規化用一時変数
+		int x[DEF_SCAN_STEP_MAX], y[DEF_SCAN_STEP_MAX];
+		double URG_Intensity_I[DEF_SCAN_STEP_MAX];
+		double angle[DEF_SCAN_STEP_MAX], a_1[DEF_SCAN_STEP_MAX], a_2[DEF_SCAN_STEP_MAX], b_1[DEF_SCAN_STEP_MAX], b_2[DEF_SCAN_STEP_MAX], c[DEF_SCAN_STEP_MAX];
+		//レーザセンサの反射強度正規化
+		int arrayMinimal = std::min({urgDistance.size(), urgIntensity.size()/*, DEF_SCAN_STEP_MAX*/});
+		for (int i = 0; i < arrayMinimal; i++)
+		{
+			x[i] = cv::round(urgDistance[i] * Scale * sinVal[i]);
+			y[i] = cv::round(urgDistance[i] * Scale * cosVal[i]);
+			//反射強度正規化(begin) 正規化反射強度:URG_Intensity_I
+			if (i != 0)
+			{
+				a_1[i] = - x[i];  //ベクトルaのx成分
+				a_2[i] = - y[i];  //ベクトルaのy成分
+				b_1[i] = x[i - 1] - x[i]; //ベクトルbのx成分
+				b_2[i] = y[i - 1] - y[i]; //ベクトルbのy成分
+				c[i] = a_1[i] * b_1[i] + a_2[i] * b_2[i] /
+					sqrt((double)(a_1[i] * a_1[i] + a_2[i] * a_2[i])) * sqrt((double)(b_1[i] * b_1[i] + b_2[i] * b_2[i])); //2ベクトルのなす角からcos(90-x)を求める
+				angle[i] = sqrt(1 - (c[i] * c[i]));																		   //表面の法線ベクトルに対する入射角 sin^2 + cos^2 = 1よりsinを求め cosx = sin(90-x)より cosxをもとめた
+			}
+			URG_Intensity_I[i] = urgIntensity[i] * pow((double)urgDistance[i], (double)0.287) / pow((double)angle[i], (double)0.196); //反射強度の正規化 正規化値=計測値*r^0.287/cos^0.196(x) (r:距離,cosx:表面法線に対する入射角)
+			urgIntensity[i] = cv::round(URG_Intensity_I[i] / RetroreflectiveIntensity * 255);
+			if (urgIntensity[i] > 255)
+				urgIntensity[i] = 255;
+			if (urgIntensity[i] < 0)
+				urgIntensity[i] = 0;
+		}
+	}
+
+	void CalcDrawPosition()
+	{
+		if(drawPosition.size() != dataSize){
+			drawPosition.resize(dataSize);
+		}
+		int arrayMinimal = std::min({urgDistance.size()});
+		for (int i = 0; i < arrayMinimal; i++)
+		{
+			//if (urgDistance[i] > ThresS && urgDistance[i] < ThresL)
+			{
+				drawPosition[i].x = -cv::round(urgDistance[i] * Scale * sinVal[i]) + windowSize.width  * 0.5 - offsetY * Scale;
+				drawPosition[i].y =  cv::round(urgDistance[i] * Scale * cosVal[i]) + windowSize.height * 0.5 - offsetX * Scale;
+			}
+		}
+	}
+
+	protected: // ローカル変数
+	int dataSize = 0;
+};
+double ScanMessageHnadler::RetroreflectiveIntensity;
+
+
+// ////////////////
+// // Functions
+// ////////////////
+
+int main(int argc, char **argv)
+{
+	// ---Configure---
+	std::string NodeName = "person_following_multi";
+	std::string TopicNameTrackingPosition = "pose_person_following";
+	double OutputTopicOffsetPoseX = 0;
+	double OutputTopicOffsetPoseY = 0;
+	double OutputTopicOffsetPoseT = -0.5 * M_PI;
+
+	double StartTrackingIntensityMin = 80;	// 自動的にトラッキングを始める最小反射強度
+	double StartTrackingDistanceMax  = 2200; // 自動的にトラッキングを始める最大距離
+	double StopTrackingIntensity 	= 32;	// トラッキングをやめる強度 
+	ScanMessageHnadler::RetroreflectiveIntensity  = 200000;// 再帰性反射材の強度
+
+	windowSize = cv::Point(640, 640);
+
+	float ThresL = 3000;	 // 遠距離のしきい値(3000=3m)
+	float ThresM = 1000;	 // 中距離のしきい値(1000=1m)
+	float ThresS = 200;		 // 近距離のしきい値(200=20cm)
+
+	// 追跡中フラグ
+	int isTracked = 0;
+	double aveIntensity = 0;
+
+	std::vector<ScanMessageHnadler> handlerList;
+	handlerList.push_back(ScanMessageHnadler());
+	handlerList.back().SetOffset(0, 0, 0);
+	handlerList.back().topicName = "scan";
+
+	// ---Configure---
+	{// ---Load configure---
+	    if (argc >= 2) {
+	        auto configure = json11::LoadJsonFile(argv[1]);
+	        if (configure == nullptr) {
+	            std::cerr << "cannnoot read configure file." << std::endl;
+	        }
+	        else{
+	            NodeName                     = configure["NodeName"].is_null() ? NodeName : configure["NodeName"].string_value();
+				StartTrackingIntensityMin    = configure["StartTrackingIntensityMin"].is_null() ? StartTrackingIntensityMin : configure["StartTrackingIntensityMin"].number_value();
+	            StartTrackingDistanceMax     = configure["StartTrackingDistanceMax"].is_null() ? StartTrackingDistanceMax : configure["StartTrackingDistanceMax"].number_value();
+	            StopTrackingIntensity        = configure["StopTrackingIntensity"].is_null() ? StopTrackingIntensity : configure["StopTrackingIntensity"].number_value();
+				TopicNameTrackingPosition    = configure["TopicNamePublishPosition"].is_null() ? TopicNameTrackingPosition : configure["TopicNamePublishPosition"].string_value();
+	            ScanMessageHnadler::RetroreflectiveIntensity = configure["RetroreflectiveIntensity"].is_null() ? ScanMessageHnadler::RetroreflectiveIntensity : configure["RetroreflectiveIntensity"].number_value();
+	            
+				windowSize.width  = configure["ImageSize"]["x"].is_null() ? windowSize.width  : configure["ImageSize"]["x"].number_value();
+				windowSize.height = configure["ImageSize"]["y"].is_null() ? windowSize.height : configure["ImageSize"]["y"].number_value();
+				
+				OutputTopicOffsetPoseX = configure["OutputOffset"]["x"].is_null() ? OutputTopicOffsetPoseX : configure["GlobalOffset"]["x"].number_value();
+				OutputTopicOffsetPoseY = configure["OutputOffset"]["y"].is_null() ? OutputTopicOffsetPoseY : configure["GlobalOffset"]["y"].number_value();
+				OutputTopicOffsetPoseT = configure["OutputOffset"]["theta"].is_null() ? OutputTopicOffsetPoseT : configure["GlobalOffset"]["theta"].number_value() - (0.5 * M_PI);
+
+				ThresS = configure["ThresholdDistance"]["short"].is_null() ? windowSize.width : configure["ThresholdDistance"]["short"].number_value();
+				ThresM = configure["ThresholdDistance"]["medium"].is_null() ? windowSize.height : configure["ThresholdDistance"]["medium"].number_value();
+				ThresL = configure["ThresholdDistance"]["long"].is_null() ? windowSize.width : configure["ThresholdDistance"]["long"].number_value();
+
+				if(configure["ScanList"].is_array()){
+					auto slist = configure["ScanList"].array_items();
+					if(slist.size() != 0){
+						handlerList.clear();
+						for(const auto &itr : slist){
+							if(itr["Offset"]["x"].is_null() || itr["Offset"]["y"].is_null() || itr["Offset"]["theta"].is_null() || itr["TopicName"].is_null()){
+								continue;
+							}
+							handlerList.push_back(ScanMessageHnadler());
+							handlerList.back().SetOffset(itr["Offset"]["x"].number_value(), itr["Offset"]["y"].number_value(), itr["Offset"]["theta"].number_value());
+							handlerList.back().topicName = itr["TopicName"].string_value();
+						}
+					}
+				}
+	        }
+
+	    }
+	    else {
+	        //     std::cerr << "invalid argument." << std::endl;
+	        //     exit(1);
+	    }
+	}// ---Load configure---
+
+	// 定数
+	const int OffsetX = windowSize.width * 0.5; // 画像中でのセンサ位置のX軸方向オフセット
+	const int OffsetY = windowSize.height * 0.5; // 画像中でのセンサ位置のY軸方向オフセット
+
+
+	// ---ROS Initialize---
+	ros::init(argc, argv, NodeName.c_str());
+	ros::NodeHandle nodeHandle;
+
+	std::vector<ros::Subscriber> subscLaserScan;
+	for(int i = 0; i < handlerList.size(); i++){
+		subscLaserScan.push_back(nodeHandle.subscribe(handlerList[i].topicName.c_str(), 100, &ScanMessageHnadler::TopicCallbackFunction, &(handlerList[i])));
+	}
+	
+	ros::Publisher pubPosePersonFollowing = nodeHandle.advertise<geometry_msgs::Pose2D>(TopicNameTrackingPosition.c_str(), 100);
+	geometry_msgs::Pose2D msgPosePersonFollowing;
+
+	// 距離データ表示用設定
+	cv::Mat baseImage      (windowSize, CV_8UC3);  // 分かりやすくするためにセンサ位置や観測範囲などを描画しておくベース画像
+	cv::Mat distanceImage  (windowWSize, CV_8UC3); // センサで取得した距離データを描画する画像
+	cv::Mat intensityImage (windowWSize, CV_8UC1); // 反射強度用画像
+
+	// センサ位置と観測範囲の描画
+	constexpr int SCAN_STEP_NUM = 1080;
+	const float Rotate = 45;		 // 回転角度
+	baseImage.setTo(cv::Scalar(0,0,0));
+	cv::circle(baseImage, cv::Point(cv::round(OffsetX), cv::round(OffsetY)), 4, CV_RGB(64, 64, 64), -1, 8); // センサの位置
+	for (int jj = 0; jj < SCAN_STEP_NUM; jj++)
+	{
+		double angle = (jj * 0.25 + Rotate) * (M_PI / 180);
+		cv::circle(baseImage, cv::Point(cvround(ThresS * Scale * sin(angle)) + OffsetX, cv::round(ThresS * Scale * cos(angle)) + OffsetY), 1, CV_RGB(64, 64, 64), -1, 8); // 近距離のしきい値の円孤
+		cv::circle(baseImage, cv::Point(cvround(ThresM * Scale * sin(angle)) + OffsetX, cv::round(ThresM * Scale * cos(angle)) + OffsetY), 1, CV_RGB(32, 32, 32), -1, 8); // 中距離のしきい値の円弧
+		cv::circle(baseImage, cv::Point(cvround(ThresL * Scale * sin(angle)) + OffsetX, cv::round(ThresL * Scale * cos(angle)) + OffsetY), 1, CV_RGB(64, 64, 64), -1, 8); // 遠距離のしきい値の円弧
+	}
+
+	//**************************************************************************************************
+	// OpenCVの準備
+	//**************************************************************************************************
+	cv::Mat dispImage    (windowSize, CV_8UC3);	   // 結果表示用画像
+	cv::Mat distImage    (windowSize, CV_8UC1);	   // センサで取得した距離データを描画する画像
+	cv::Mat distImageNot (windowSize, CV_8UC1); // センサで取得した距離データを描画した画像を反転
+	cv::Mat transImage   (windowSize, CV_32FC1);  // 距離画像に変換
+
+	// ウインドウの準備
+	cv::namedWindow("Display Image", cv::WINDOW_AUTOSIZE);
+
+	// マウスコールバック関数の登録
+	cv::setMouseCallback("Display Image", mouseCallback);
+
+	// // 文字フォントの設定
+	// CvFont myfont;
+	// cvInitFont(&myfont, CV_FONT_HERSHEY_COMPLEX_SMALL, 0.7, 0.7); // 大きい文字CV_FONT_HERSHEY_COMPLEX,小さい文字CV_FONT_HERSHEY_COMPLEX_SMALL
+
+	//**************************************************************************************************
+	// 楕円追跡器(パーティクルフィルタ=Condensation)の準備
+	//**************************************************************************************************
+	// // 追跡器構造体ConDensの作成
+	// CvConDensation *ConDens = myCreateConDensation(3, 300); // 引数(状態変数ベクトルの次元, サンプル数)
+	// // サンプルのパラメータを設定する, initValue - 初期値, initMean - 平均, initDeviation - 標準偏差
+	// CvMat *initValue = cvCreateMat(3, 1, CV_32FC1);
+	// CvMat *initMean = cvCreateMat(3, 1, CV_32FC1);
+	// CvMat *initDeviation = cvCreateMat(3, 1, CV_32FC1);
+	// initValue->data.fl[0] = 0.0;
+	// initValue->data.fl[1] = 0.0;
+	// initValue->data.fl[2] = 0.0; // 初期値(X座標，Y座標，角度) 単位は画素
+	// initMean->data.fl[0] = 0.0;
+	// initMean->data.fl[1] = 0.0;
+	// initMean->data.fl[2] = 0.0; // 平均　(X座標，Y座標，角度) 単位は画素
+	// initDeviation->data.fl[0] = 5.0;
+	// initDeviation->data.fl[1] = 5.0;
+	// initDeviation->data.fl[2] = 20.0; // 分散　(X座標，Y座標，角度) 単位は画素
+	// // 追跡器構造体Condensの各サンプルの初期化
+	// myConDensInitSampleSet(ConDens, initValue, initMean, initDeviation);
+	// // 追跡器構造体Condensのサンプルの更新
+	// myConDensUpdateSample(ConDens);
+	// // センサの位置をセット
+	// SetSensorPosition(cvPoint(OffsetX, OffsetY));
+	// // 楕円の輪郭評価点テーブルの作成（長軸半径，短軸半径，刻み角度θ）
+	// StoreBodyContourPosition(24, 12, 10); // 肩の大きさ (横幅　縦幅　角度の刻み) 単位は画素
+	// // 円の輪郭評価点テーブルの作成（半径，刻み角度θ）：表示用
+	// StoreHeadContourPosition(12, 10); // 頭の大きさ (幅　角度の刻み) 単位は画素
+
+	EllipseTrackerPool trackers(1, 300, 24, 12, cv::Vec2d(OffsetX, OffsetY));
+
+	//**************************************************************************************************
+	// Main Loop
+	//**************************************************************************************************
+	ros::Rate loop_rate(60);
+	while (ros::ok())
+	{
+		// ベース画像で初期化
+		baseImage.copyTo(dispImage);
+		baseImage.copyTo(distanceImage);
+		intensityImage.setTo(cv::Scalar(0));
+		//センサ情報を描画
+		for(const auto &itr : handlerList){
+			for (int i = 0; i < itr.drawPosition.size(); i++)
+			{
+				if (itr.urgDistance[i] > ThresS && itr.urgDistance[i] < ThresL)
+				{
+					cv::circle(distanceImage, itr.drawPosition[i], 1, CV_RGB(0, 255, 255), -1);
+					cv::circle(intensityImage, itr.drawPosition[i], 1, CV_RGB(itr.urgIntensity[i], itr.urgIntensity[i], itr.urgIntensity[i]), -1);
+					int color1 = itr.urgIntensity[i] * 4 + 64;
+					cv::circle(dispImage, itr.drawPosition[i], 1, CV_RGB(64, color1, color1), -1);
+				}
+			}
+		}
+
+		// 結果の表示
+		//cvShowImage("Distance Image", distanceImage);
+		cv::imshow("Intensity Image", intensityImage);
+
+		/***************************************************************************************************************/
+
+		cv::cvtColor(distanceImage, distImage, cv::COLOR_BGR2GRAY);
+		cv::threshold(distImage, distImageNot, 64.0, 255.0, cv::THRESH_BINARY_INV); // 反射強度が高いものだけ2値化して反転描画(閾値153くらい？)
+		cv::distTransform(distImageNot, transImage);								 // 距離画像変換
+		//cvNormalize(transImage, distImage, 0.0, 255.0, CV_MINMAX, NULL); // 表示確認用
+
+		// サンプルの更新
+		trackers.next(transImage);
+
+		// 追跡結果(人物位置)を他で使うために取り出す
+		int usrU = -100;    // 人物位置のx座標
+		int usrV = -100;    // 人物位置のy座標
+		int usrAngl = -100; // 人物胴体の角度
+		if(!trackers.empty()){
+			auto _p =trackers[0]->getPos();
+			usrU = _p[0];
+			usrV = _p[1];
+			usrAngl = _p[2];
+		}
+
+		//追跡器の周りの平均反射強度を計算
+		//int usrU2 = usrU-30; int usrV2 = usrV-30;
+		//if(usrU2<0) usrU2=0; if(usrU2>639-60) usrU2=639-60; if(usrV2<0) usrV2=0; if(usrV2>639-60) usrV2=639-60;
+		//cv::cvtColor(intensityImage, distImage, CV_BGR2GRAY);
+		//cvSetImageROI(distImage, cvRect(usrU - 30, usrV - 30, 60, 60));
+		//aveIntensity = (int)(cvSum(distImage).val[0] / cvCountNonZero(distImage));
+		//cvResetImageROI(distImage);
+		if(!trackers.empty()){
+			cv::Mat intensityROI(intensityImage, cv::Rect(usrU - 30, usrV - 30, 60, 60));
+			aveIntensity = (cv::sum(intensityROI)[0] / cv::countNonZero(intensityROI));
+		}
+		else{
+			aveIntensity = 0.0;
+		}
+
+		//追跡器の周りの平均反射強度が低いときには追跡をやめる
+		if (isTracked == 1 && aveIntensity < StopTrackingIntensity)
+		{
+			// initValue->data.fl[0] = NULL;
+			// initValue->data.fl[1] = NULL;										 // サンプルの初期化パラメータのうち初期値をマウスクリック座標に設定する
+			// myConDensInitSampleSet(ConDens, initValue, initMean, initDeviation); // 追跡器構造体Condensの各サンプルの初期化
+			// myConDensUpdateSample(ConDens);										 // 追跡器構造体Condensのサンプルの更新
+			// myConDensUpdateByTime(ConDens);										 // 状態期待値も計算しておく
+			trackers.removeByOrder(0);
+			isTracked = 0;
+		}
+
+		//追跡していないときに，近くで高反射強度が検出された場合，初期値変更して再追跡
+		if (isTracked == 0)
+		{ //対象損失時
+			for(const auto &itr : handlerList){
+				for (int i = 0; i < itr.urgDistance.size(); i++)
+				{
+					if (itr.urgDistance[i] < StartTrackingDistanceMax && itr.urgIntensity[i] > StartTrackingIntensityMin)
+					{																						   //1m以内で正規化反射強度が120以上なら追跡初期化
+						int initU = cv::round((itr.urgDistance[i] * Scale * itr.sinVal[i]) + OffsetX - 20); // サンプルの初期化パラメータのうち初期値をマウスクリック座標に設定する
+						int initV = cv::round((itr.urgDistance[i] * Scale * itr.cosVal[i]) + OffsetY);
+						trackers.add(initU, initV, 0);
+						trackers.next(transImage);
+						auto _p = trackers.getPos();
+						usrU = _p[0];
+						usrV = _p[1];
+						usrAngl = _p[2];
+						isTracked = 1;
+						break;
+					}
+				}
+				if(isTracked){
+					break;
+				}
+			}
+		}
+
+		//マウスでクリックされたらその位置を初期位置として追跡を開始
+		if (lbPressed && !isTracked)
+		{
+			lbPressed = false; // マウスクリックのフラグを戻す
+			usrU = lbX;
+			usrV = lbY;
+			if(isTracked){
+				trackers[0]->init(usrU, usrV, usrAngl);
+			}
+			else{
+				trackers.add(usrU, usrV, usrAngl);
+				isTracked=1;
+			}
+			trackers.next(transImage);
+			auto _p = trackers[0]->getPos();
+			usrU = _p[0];
+			usrV = _p[1];
+			usrAngl = _p[2];
+		}
+
+		// 追跡結果の描画
+		if (isTracked == 1)
+		{
+			//DrawBodyContour(dispImage, cvPoint(usrU, usrV), usrAngl);
+			cv::ellipse(dispimage, cv::Point(usrU, usrV), cv::Size(24,12), usrAngl, 0, 360, CV_RGB(255,255,255), 2);
+			cv::rectangle(dispImage, cv::Point(usrU - 30, usrV - 30), cv::Point(usrU + 30, usrV + 30), CV_RGB(255, 255, 255), 1);
+			if (aveIntensity < 0)
+				aveIntensity = 0;
+			char mytext[12];
+			sprintf(mytext, "%4.0lf", aveIntensity);
+			cv::putText(dispImage, mytext, cv::Point(usrU + 30, usrV + 30), cv::FONT_HERSHEY_COMPLEX_SMALL, 0.7, CV_RGB(255, 255, 255), 1);
+		}
+
+		// For Follow Tracking
+		if (isTracked == 1 && (usrU != 0 && usrV != 0))
+		{
+			double rotX = (usrU - OffsetX) * cos(OutputTopicOffsetPoseT) - (usrV - OffsetY) * sin(OutputTopicOffsetPoseT);
+			double rotY = (usrU - OffsetX) * sin(OutputTopicOffsetPoseT) + (usrV - OffsetY) * cos(OutputTopicOffsetPoseT);
+			msgPosePersonFollowing.x = OutputTopicOffsetPoseX + (-1.0) * rotX / (ScanMessageHnadler::SCAN_DISTANCE_MAGNIFICATION * Scale);
+			msgPosePersonFollowing.y = OutputTopicOffsetPoseY - (-1.0) * rotY / (ScanMessageHnadler::SCAN_DISTANCE_MAGNIFICATION * Scale);
+			//msgPosePersonFollowing.theta = OutputTopicOffsetPoseT  + (usrAngl * M_PI * 0.0027778);
+			msgPosePersonFollowing.theta = defOffsetPoseT  + (usrAngl * M_PI / 360.0); //*0.0027778だった．なんで/180じゃないんだろう？（鈴木）
+			pubPosePersonFollowing.publish(msgPosePersonFollowing);
+		}
+
+		/***************************************************************************************************************/
+
+		// 結果の表示
+		cv::imshow("Display Image", dispImage);
+
+		if (cv::waitKey(1) == 'q')
+		{
+			break;
+		}
+
+		ros::spinOnce();
+		loop_rate.sleep();
+	}
+
+	// ウインドウを閉じる
+	cv::destroyAllWindows();
+
+	return 0;
+}
