@@ -1,0 +1,94 @@
+コード内のパス変える
+    sks_objectpoint_robot_person.cpp
+    find_objectpoint_by_orientation.cpp
+    ros/location/〇〇/(conf ☓3)
+
+ icartmini_demo_lever_less.launch
+     ros/launchs/remote_ctrl_queue_stk_dist.launch
+
+○地図作成
+rosrun gnd_visualizer gnd_route_editor ros/locations/地図フォルダ/route_editor.conf
+
+
+sudo ds4drv
+ypspur-coordinator -d /dev/ttyACM0 -p ros/icartmini/icart-mini.param
+roslaunch ros/launchs/icartmini_demo_lever_less.launch
+（本番）
+rosrun icartmini_sbtp icartmini_sbtp ros/locations/20241219/navigation_sbtp_icartmini01.conf
+rosrun nkm_destination_queue nkm_destination_queue ros/locations/20241219/nkm_destination_queue.conf
+roslaunch ros/launchs/urg_tutorial.launch
+rosrun person_following person_following_OR ros/icartmini/stk/OR_person_following_conf_5.json
+rosrun nkm_follow_tracking nkm_follow_tracking ros/locations/20241219/nkm_follow_tracking.conf
+
+rosrun hdk_objectpoint_finder find_objectpoint_by_orientation ros/locations/20241219/find_objectpoint_by_orientation.conf
+rosrun sks_objectpoint_robot_person sks_objectpoint_robot_person ros/locations/20241219/sks_objectpoint_robot_person.conf
+
+
+
+
+---------------20240704-----------------------------------------------------------------
+rosrun icartmini_sbtp icartmini_sbtp ros/locations/20240704/navigation_sbtp_icartmini01.conf
+rosrun nkm_destination_queue nkm_destination_queue ros/locations/20240704/nkm_destination_queue.conf
+roslaunch ros/launchs/urg_tutorial.launch
+rosrun person_following person_following_OR ros/icartmini/stk/OR_person_following_conf_5.json
+rosrun nkm_follow_tracking nkm_follow_tracking ros/locations/20240704/nkm_follow_tracking.conf
+
+(近い位置にあるやつ)
+rosrun hdk_objectpoint_finder hdk_objectpoint_finder ros/locations/20240704/hdk_objectpoint_finder.conf
+rosrun sks_objectpoint_robot_person sks_objectpoint_robot_person ros/locations/20240704/sks_objectpoint_robot_person.conf
+---------------20240704-----------------------------------------------------------------
+
+rosrun hdk_objectpoint_finder hdk_objectpoint_finder ros/locations/raunji20241112/hdk_objectpoint_finder.conf
+rosrun sks_objectpoint_robot_person sks_objectpoint_robot_person ros/locations/raunji20241112/sks_objectpoint_robot_person.conf
+※一番近いとこのやつ（sks_objectpointの方のコード直して使う）
+-------------
+
+~~~~~~~~~~~~~~~~
+rosrun hdk_objectpoint_finder find_objectpoint_by_orientation ros/locations/20240704/find_objectpoint_by_orientation.conf
+rosrun sks_objectpoint_robot_person sks_objectpoint_robot_person ros/locations/20240704/sks_objectpoint_robot_person.conf
+※人の向きに応じて
+
+rosrun hdk_objectpoint_finder find_objectpoint_by_orientation ros/locations/raunji20241112/find_objectpoint_by_orientation.conf
+rosrun sks_objectpoint_robot_person sks_objectpoint_robot_person ros/locations/raunji20241112/sks_objectpoint_robot_person.conf
+~~~~~~~~~~~~~~~~
+
+rosrun follow_guide_switch follow_guide_switch
+rosrun stk_distance_switch stk_distance_switch_more
+
+
+○opencampus_20230808
+
+roslaunch ros/launchs/icartmini_demo_lever_less.launch
+rosrun icartmini_sbtp icartmini_sbtp ros/locations/opencampus_20230808/navigation_sbtp_icartmini01.conf
+rosrun nkm_destination_queue nkm_destination_queue ros/locations/opencampus_20230808/nkm_destination_queue.conf
+roslaunch ros/launchs/urg_tutorial.launch
+rosrun person_following person_following_OR ros/icartmini/stk/OR_person_following_conf_5.json
+rosrun nkm_follow_tracking nkm_follow_tracking ros/locations/opencampus_20230808/nkm_follow_tracking.conf
+
+rosrun hdk_objectpoint_finder hdk_objectpoint_finder ros/locations/opencampus_20230808/hdk_objectpoint_finder.conf
+rosrun sks_objectpoint_robot_person sks_objectpoint_robot_person ros/locations/opencampus_20230808/sks_objectpoint_robot_person.conf
+
+
+○５f
+rosrun icartmini_sbtp icartmini_sbtp ros/locations/bldg_RandP_5F/navigation_sbtp_icartmini01.conf
+rosrun nkm_destination_queue nkm_destination_queue ros/locations/bldg_RandP_5F/nkm_destination_queue.conf
+roslaunch ros/launchs/urg_tutorial.launch
+rosrun person_following person_following_OR ros/icartmini/stk/OR_person_following_conf_5.json
+rosrun nkm_follow_tracking nkm_follow_tracking ros/locations/bldg_RandP_5F/nkm_follow_tracking.conf
+
+rosrun hdk_objectpoint_finder find_objectpoint_by_orientation ros/locations/bldg_RandP_5F/find_objectpoint_by_orientation.conf
+rosrun sks_objectpoint_robot_person sks_objectpoint_robot_person ros/locations/bldg_RandP_5F/sks_objectpoint_robot_person.conf
+
+
+○地図作成
+rosrun gnd_visualizer gnd_route_editor ros/locations/地図フォルダ/route_editor.conf
+
+○５Ｆ
+rosrun icartmini_sbtp icartmini_sbtp ros/locations/shino_5f/navigation_sbtp_icartmini01.conf
+rosrun nkm_destination_queue nkm_destination_queue ros/locations/shino_5f/nkm_destination_queue.conf
+roslaunch ros/launchs/urg_tutorial.launch
+rosrun person_following person_following_OR ros/icartmini/stk/OR_person_following_conf_5.json
+rosrun nkm_follow_tracking nkm_follow_tracking ros/locations/shino_5f/nkm_follow_tracking.conf
+
+rosrun hdk_objectpoint_finder find_objectpoint_by_orientation ros/locations/shino_5f/find_objectpoint_by_orientation.conf
+rosrun sks_objectpoint_robot_person sks_objectpoint_robot_person ros/locations/shino_5f/sks_objectpoint_robot_person.conf

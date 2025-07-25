@@ -1,0 +1,18 @@
+○LiDARの値がpublishされない
+→ploxyのIPを設定する
+
+○IMUの値がPublishされない
+→ros/icartmini/~vn100.confのusb-device→ttyUSB0 or USB1に変更
+baudrate=921600
+→
+baudrate=115200に変更
+
+○初期設定（icartminiからvehicleに移行する際）
+nameのところに(arg robot)入れていけない（proxy）
+
+→直接ファイル名を打つ
+
+○proxy起動すると、コントローラ操作できなくなる
+→中身が重複している部分あり
+
+

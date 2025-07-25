@@ -1,0 +1,26 @@
+route_editor.cpp
+	ctrl+shift+クリックでissueroute_edit_add_objectpoint呼び出し
+→Qobjectでconnect
+
+path_net.cpp
+	・for_editとwith_areaでadd_objectpoint(for_editはデバック出力せず)
+	・fwrite関数内使っている
+	
+gnd-path.hpp
+	これがつまりmyobject_->path_net_.addobjectpoint?
+	キューにオブジェクトを追加して、path_net.cppの方に戻る
+	queue<objectpoint_t> obj_;  // objectpoint_tのキューを追加
+
+
+
+gnd-path-io.hppで書き込み
+	set objectpointが2個あるうち、もう一個の方でGETTO関数を使えばよかった。
+↓
+書き込み完了
+
+次にやること
+読み込み
+	
+
+
+

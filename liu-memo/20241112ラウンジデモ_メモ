@@ -1,0 +1,129 @@
+地図作るとき
+以下のコマンドを連続で実行し、rostopicでうまく出力されているか確認
+
+ypspur-coordinator -d /dev/ttyACM0 -p ros/icartmini/icart-mini.param
+sudo ds4drv
+roslaunch ros/launchs/icartmini_controller.launch
+roslaunch ros/launchs/icartmini_hw_proxies.launch
+rostopic echo /imu_vecnav
+rostopic echo /scan
+rostopic echo /motor_rate
+
+
+rosbag record motor_rate scan imu_vecnav
+    ※まず1分間停止状態でデータ取得→"20241219.bag"に変更→locationフォルダへ移動
+    ※2回目は"20241219makemap.bag"に変更→locationへ
+
+＃作成
+roslaunch ros/launchs/icartmini_hw_simulation.launch
+cd ros/locations/20241219
+rosrun gnd_lssmap_maker gnd_lssmap_maker lssmap_maker.conf
+rosbag play 20241219offset.bag
+    ※実行した順番と逆の順番でCtrl+Cする
+    ※ここで、rate_offsetの値を変更する(ros/icartmini/gyrodometer.conf の中身を編集)
+// second 
+roslaunch ros/launchs/icartmini_hw_simulation.launch 
+rosrun gnd_lssmap_maker gnd_lssmap_maker lssmap_maker.conf //twice
+rosbag play 20241219makemap.bag //make rateoffset same 
+    ※地図ができているか確認
+
+前半フォルダの中のファイルを地図ファイル内に持ってきてパスを変更する
+
+＃ルート設定    
+cd /home/kobayashilab/
+roscore
+rosrun gnd_visualizer gnd_route_editor ros/locations/20241219/route_editor.conf
+    ctrl + クリックで waypoint を打つ
+    shift + クリックで選択。何もないスペースをクリックして選択解除
+    ２つの waypoint を順に選択すると経路を引ける。
+    ドラックで waypoint の位置、経路の幅を調整可。
+    waypoint や経路を選択後、 delete で削除できる。
+    ctrl + s で保存 → 端末に戻って ctrl + c で終了
+    new.path は 地図フォルダ名.path に名前を変更し、地図フォルダに移動。    
+
+○icartmini_localization.launchのパス変更
+
+後半フォルダの中のファイルを地図ファイル内に持ってきてパスを変更
+
+
+動かすとき
+
+買い物カートでのパス変更
+    icartmini_demo_lever_less.launch
+    ros/locations/20241219/nkm_destination_queue.conf
+    ros/locations/20241219/nkm_follow_tracking.conf
+     ros/icartmini/stk/OR_person_following_conf_5.json
+     ros/launchs/remote_ctrl_queue_stk_dist.launch
+
+f陣形やるとき
+    コンフィグファイルを用意する
+    sks_objectpoint_robot_person.cpp
+    find_objectpoint_by_orientation.cpp
+    conf ☓3
+    
+加藤さんの音声だけで切り替えるやつに変更する
+sbtpの中身変えたが動くか？確認する
+501で伊藤くんとやってみる
+
+
+
+
+全部で13のターミナル必要
+
+#PS4コントローラ
+sudo ds4drv
+
+#icartmini
+ypspur-coordinator -d /dev/ttyACM0 -p ros/icartmini/icart-mini.param
+
+#自律移動（握るレバー使わない版）
+roslaunch ros/launchs/icartmini_demo_lever_less.launch
+
+#経路計画（自律移動の一部）
+rosrun icartmini_sbtp icartmini_sbtp ros/locations/20241219/navigation_sbtp_icartmini01.conf
+
+#目的地をキューで与えるノード
+rosrun nkm_destination_queue nkm_destination_queue ros/locations/20241219/nkm_destination_queue.conf
+
+#Lidar 2個 /scan1 と /scan2
+roslaunch ros/launchs/urg_tutorial.launch
+
+#人物（楕円）追跡 person_following を少しいじったやつ
+rosrun person_following person_following_OR ros/icartmini/stk/OR_person_following_conf_5.json
+
+#追跡した座標を追従する（queueを使ってる）
+rosrun nkm_follow_tracking nkm_follow_tracking ros/locations/20241219/nkm_follow_tracking.conf
+
+#誘導と追従を切り替えるサービスのノード
+rosrun follow_guide_switch follow_guide_switch
+
+#音声命令と距離の同時使用を試みたバージョン，「案内を開始して」スキルを使えるバージョン（こっちが動くと嬉しい）
+rosrun stk_distance_switch stk_distance_switch_more
+#距離が近いと誘導離れると追従
+(rosrun stk_distance_switch stk_distance_switch)
+
+#さくらサーバ （鍵ファイル名がkobayashilab@crelay.0ef.netの場合）
+ssh kobayashilab@crelay.0ef.net -p 2022 -i kobayashilab@crelay.0ef.net
+>cd /var/www/html
+>python server_ponci.py
+
+#さくらサーバと通信（どれか一つ）
+ #音声でqueueに目的地入力＋誘導追従を切り替える版（これが動くと嬉しい）
+ roslaunch ros/launchs/remote_ctrl_queue_stk_dist.launch
+ #音声で誘導追従切り替えだけする簡易版
+ (rosrun stk_sakura_proxy stk_sakura_proxy)
+ #音声でqueueに目的地入力だけをするcd 
+ (roslaunch ros/launchs/remote_ctrl_queue.launch)
+
+queue に目的地入力とかするコマンド
+rosservice call nkm_destination_queue/add_destination \"000\" 0
+rosservice call nkm_destination_queue/show_queue
+rosservice call nkm_destination_queue/delete_destination -- 000 + 0 (2つ上の0的な感じ)
+#delete_destination + orderID
+#First = -1
+#Last = -2
+#AllQueue = -3
+
+アレクササーバーうまく切れてなかったら
+ps -aux | grep server_ponci
+kill 番号

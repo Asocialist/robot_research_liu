@@ -1,0 +1,107 @@
+自立移動システムメモ
+簡略版
+
+☆地図作成
+＃環境計測
+ypspur-coordinator -d /dev/ttyACM0 -p ros/icartmini/icart-mini.param
+sudo ds4drv
+roslaunch ros/launchs/icartmini_controller.launch
+roslaunch ros/launchs/icartmini_hw_proxies.launch
+rostopic echo /imu_vecnav
+rostopic echo /scan
+rostopic echo /motor_rate
+
+rosbag record motor_rate scan imu_vecnav
+
+＃作成
+roslaunch ros/launchs/icartmini_hw_simulation.launch
+cd ros/locations/
+rosrun gnd_lssmap_maker gnd_lssmap_maker lssmap_maker.conf
+rosbag play 地図名offset.bag
+
+gyrodometerのoffsetを変更
+
+
+・lssmap_particle_evaluator.conf	
+・navigation_sbtp_icartmini.conf	
+・particle_localizer.conf ※particle_localizer.conf は修正不要(地図データに依存しない)	
+・route_editor.conf		
+・visualizer.conf			
+中身の該当箇所を作成した地図フォルダ名に変えておく
+※particle_localizer.conf は修正不要(地図データに依存しない)
+
+＃ルート設定
+cd /home/kobayashilab/
+roscore
+rosrun gnd_visualizer gnd_route_editor ros/locations/地図フォルダ/route_editor.conf
+ctrl + クリックで waypoint を打つ
+shift + クリックで選択。何もないスペースをクリックして選択解除
+２つの waypoint を順に選択すると経路を引ける。
+ドラックで waypoint の位置、経路の幅を調整可。
+waypoint や経路を選択後、 delete で削除できる。
+ctrl + s で保存 → 端末に戻って ctrl + c で終了
+new.path は 地図フォルダ名.path に名前を変更し、地図フォルダに移動。
+
+＃以下のlaunchファイルに地図フォルダを追加
+○icartmini_demo_marker_L.launch
+○icartmini_localization.launch
+
+・hdk_waypoint_finder.conf
+・hdk_pose_resetter_L.conf
+・sy_rollsign.conf	
+・navigation_point.csv
+・hdk_pose_evaluator.conf	
+※navigation_point.csv は修正不要
+
+
+☆自立移動
+
+・ros/icartmini/nkm_destination_queue.conf 
+・roslaunch ros/launchs/remote_ctrl_queue.launch
+・demomarker_L~~~~       を編集
+
+ypspur-coordinator -d /dev/ttyACM0 -p ros/icartmini/icart-mini.param
+roslaunch ros/launchs/icartmini_demo_marker_L.launch
+rosrun icartmini_sbtp icartmini_sbtp ros/locations/地図ファイル名/navigation_sbtp_icartmini01.conf
+
+rosrun nkm_destination_queue nkm_destination_queue ros/icartmini/nkm_destination_queue.conf
+rosservice call nkm_destination_queue/add_destination \"001\" 0
+
+キューの中身確認
+rosservice call nkm_destination_queue/show_queue
+
+
+☆alexa
+
+ssh kobayashilab@crelay.0ef.net -p 2022 -i kobayashilab@crelay.0ef.net
+
+cd /var/www/html/
+
+python server_ponci.py
+・サーバー側
+
+roslaunch ros/launchs/remote_ctrl.launch
+roslaunch ros/launchs/remote_ctrl_queue.launch 
+・カート側
+
+※タッチパネルを使うプログラム
+sy_path_setterを改造
+
+☆Alexaサーバーでうまく切れていなかったら
+ps -aux | grep server_ponci
+で残っているものが表示されるから
+kill 番号
+で殺せる
+
+☆IP依存なトコロ
+・sy_traffic_indicator->sy_projecter.cpp
+			->TCPClient.h
+・nkm_destination_queue->src->TCPClient.h
+  			    ->nkm_destination_queue.cpp
+
+
+sasakiさんカートでの変更点
+・プロキシのライダーIP
+・vn100コンフの数値コメントアウト,usb0→1
+
+sy_path_setterのflagを無理やりいじって画面タッチ成功

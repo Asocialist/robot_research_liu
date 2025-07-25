@@ -1,0 +1,47 @@
+ypspur-coordinator -d /dev/ttyACM0 -p ros/icartmini/icart-mini.param
+
+※すべてのターミナルで
+export ROS_MASTER_URI=http://192.168.179.9:11311
+export ROS_HOSTNAME=192.168.179.9
+
+※export ROS_MASTER_URI=http://192.168.11.40:11311
+※export ROS_HOSTNAME=192.168.11.40
+
+roslaunch ros/launchs/sks_controller_test.launch
+
+rostopic listで現在のトピック確認できる
+
+※roslaunch ros/launchs/icartmini_controller_master2.launch
+
+----------------jwvehicle_jpycontrol_onpathのおためし---------------------
+
+ypspur-coordinator -d /dev/ttyACM0 -p ros/icartmini/icart-mini.param
+sudo ds4drv
+roslaunch ros/launchs/icartmini_demo_marker_L.launch
+
+roslaunch ros/launchs/jwvehicle_joycontrol_onpath.launch
+
+
+rosrun jwvehicle_joycontrol_onpath jwvehicle_joycontrol_onpath ros/locations/0326demo/jwvehicle_joycontrol_onpath.conf
+
+-----------------------------車椅子-------------------------------
+
+
+
+
+このコードを改造してください。
+
+サブスクライブしたmsgの中身が"js_local"ならば、サブスクライブしたmsgの中身をjoy_local_msg.buttonsとjoy_local_msg.axesに格納して、
+
+サブスクライブしたmsgの中身が"js_remote"ならば、サブスクライブしたmsgの中身をjoy_remote_msg.buttonsとjoy_remote_msg.axesに格納してください。
+
+
+そして、ローカルのあるボタンが押されている場合、joy_comb_msg.buttonsとjoy_comb_msg.axesに、joy_local_msg.buttonsとjoy_local_msg.axesの中身を格納して、押されていない場合、joy_comb_msg.buttonsとjoy_comb_msg.axesに、joy_remote_msg.buttonsとjoy_remote_msg.axesの中身を格納してください。
+
+
+
+ローラーを用いて制御を行いたいです。
+
+1つめのコントローラーでは、joyを受けとり、記載のとおりに入力した通りにロボットを動かします。
+
+もう一つのコントローラは、このコードにjoy_combをサブスクライブして、コントローラーのあるボタンが押されてる間は1つ目のこのントローラーの入力を無視するようにしてください。
