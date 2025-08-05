@@ -91,6 +91,8 @@ protected:
 		for(int i = 0; i < num; i ++){
 			sinVal[i] = sin(angle_min + angle_increment * i + offsetT + DEF_ANGLE_OFFSET);
 			cosVal[i] = cos(angle_min + angle_increment * i + offsetT + DEF_ANGLE_OFFSET);
+			// sinVal[i] = sin(angle_min + angle_increment * i);
+			// cosVal[i] = cos(angle_min + angle_increment * i);
 		}
 	}
 
@@ -213,6 +215,7 @@ int main(int argc, char **argv)
         sensorVisibleRange[i] = cv::Mat::zeros(windowSize, CV_8UC1);
 		double oft = OffsetT[i]+M_PI*0.5;
 		cv::Vec2d ofv(cos(oft),sin(oft));
+		// double costh=cos(0.25*M_PI);
 		double costh=cos(0.25*M_PI);
 		for(int r=0;r<sensorVisibleRange[i].rows;++r){
             for(int c=0;c<sensorVisibleRange[i].cols;++c){
@@ -228,6 +231,12 @@ int main(int argc, char **argv)
 		cv::bitwise_not(sensorVisibleRange[1], ___t);
 		cv::bitwise_and(sensorVisibleRange[0], ___t, sensorVisibleRange[0]);
 	}
+    //test display of sensor visible range
+	// cv::imshow("vis0", sensorVisibleRange[0]);
+	// cv::imshow("vis1", sensorVisibleRange[1]);
+	// cv::waitKey(0);
+	// cv::destroyWindow("vis0");
+	// cv::destroyWindow("vis1");
 
 	ros::init(argc, argv, NodeName.c_str());
 	ros::NodeHandle nodeHandle;
@@ -313,6 +322,24 @@ int main(int argc, char **argv)
         
         cv::add(distanceImage, distanceImage2, distanceImage);
 		cv::add(intensityImage, intensityImage2, intensityImage);
+		cv::circle(intensityImage, cv::Point(OffsetX_, OffsetY_), 4, cv::Scalar(64), -1);
+		// 画最小、最大检测半径
+		for (int jj = 0; jj < 1080; jj++) {
+    	// double angle = (jj * 0.25) * (M_PI / 180);
+
+    	// cv::circle(intensityImage, cv::Point(std::round(ThresS * Scale * sin(angle)) + OffsetX_, std::round(ThresS * Scale * cos(angle)) + OffsetY_), 1, cv::Scalar(64), -1);
+    	// cv::circle(intensityImage, cv::Point(std::round(ThresM * Scale * sin(angle)) + OffsetX_, std::round(ThresM * Scale * cos(angle)) + OffsetY_), 1, cv::Scalar(32), -1);
+    	// cv::circle(intensityImage, cv::Point(std::round(ThresL * Scale * sin(angle)) + OffsetX_, std::round(ThresL * Scale * cos(angle)) + OffsetY_), 1, cv::Scalar(64), -1);
+		// intensityImage 上画完整圆环
+		cv::circle(intensityImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresS * Scale), cv::Scalar(64), 1);
+		cv::circle(intensityImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresM * Scale), cv::Scalar(32), 1);
+		cv::circle(intensityImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresL * Scale), cv::Scalar(64), 1);
+
+		// dispImage 上画完整圆环
+	 	cv::circle(dispImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresS * Scale), cv::Scalar(64, 64, 64), 1);
+		cv::circle(dispImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresM * Scale), cv::Scalar(32, 32, 32), 1);
+		cv::circle(dispImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresL * Scale), cv::Scalar(64, 64, 64), 1);
+	}
 		cv::add(dispImage, dispImage2, dispImage);
 
 		cv::imshow("Intensity Image", intensityImage);
