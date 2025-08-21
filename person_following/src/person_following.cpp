@@ -16,7 +16,7 @@
 // // Defines
 // ////////////////
 
-#define M_PI 3.141592653589793238
+// #define M_PI 3.141592653589793238
 
 constexpr int SCAN_STEP_NUM = 1080;
 constexpr double SCAN_DISTANCE_MAGNIFICATION = 1000.0;

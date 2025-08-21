@@ -1,102 +1,67 @@
-##############################################################################
-# CMake
-##############################################################################
-
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.0.2)
 project(person_following)
 
-##############################################################################
-# Catkin
-##############################################################################
-find_package(catkin REQUIRED COMPONENTS 
-  roscpp 
-  std_msgs 
+# 设置C++标准为C++14，ROS Noetic推荐
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 查找Catkin和必要的ROS包
+# 添加了 cv_bridge
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  std_msgs
   sensor_msgs
   geometry_msgs
+  cv_bridge
   gndlib
 )
 
-#add_service_files(
-#  FILES
-#  AddDestination.srv
-#)
+# 查找OpenCV 4，并明确指定需要的组件
+# opencv_video_legacy 对于使用 CvConDensation 至关重要！
+find_package(OpenCV 4 REQUIRED COMPONENTS
+  opencv_core
+  opencv_highgui
+  opencv_imgproc
+  opencv_video
+  
+)
 
-#add_message_files(
-#  FILES
-#    SpurDriveControl.msg
-#)
-
-# generate_messages(
-#   DEPENDENCIES
-#     std_msgs
-#     sensor_msgs
-# )
-
+# Catkin包的配置
 catkin_package(
-  # INCLUDE_DIRS include
-  # LIBRARIES person_following
-  CATKIN_DEPENDS roscpp std_msgs sensor_msgs geometry_msgs gndlib
+  CATKIN_DEPENDS roscpp std_msgs sensor_msgs geometry_msgs cv_bridge gndlib
+)
+
+# 包含头文件目录
+include_directories(
+  include
+  ${catkin_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
 )
 
 
-find_package(OpenCV REQUIRED)
-include_directories(include ${catkin_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
-link_directories(${catkin_LIBRARY_DIRS} )
-
-
-##############################################################################
-# Sources
-##############################################################################
-
-#add_library(person_following src/lib/person_following.cpp)
-#target_link_libraries(person_following ${catkin_LIBRARIES})
-
-#install(TARGETS person_following
-#  RUNTIME DESTINATION ${CATKIN_GLOBAL_BIN_DESTINATION}
-#  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-#  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
-
-#install(DIRECTORY include/person_following/
-#  DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
-#  FILES_MATCHING PATTERN "*.h")
-
-add_executable(person_following
-  src/person_following.cpp
-)
-target_link_libraries(person_following ${catkin_LIBRARIES} ${OpenCV_LIBS})
-install(TARGETS person_following 
-  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
-
-add_executable(person_following_multi
-  src/person_following_multiple.cpp
-  src/json11.cpp
-)
-target_link_libraries(person_following_multi ${catkin_LIBRARIES} ${OpenCV_LIBS})
-install(TARGETS person_following_multi 
-  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
-
+# 确保包含了所有的 .cpp 源文件
 add_executable(person_following_OR
   src/person_following_multiple_OR.cpp
+  src/MyCondensation.cpp
+  src/MyEllipseNormalEvaluation_2LS.cpp
   src/json11.cpp
 )
-target_link_libraries(person_following_OR ${catkin_LIBRARIES} ${OpenCV_LIBS})
-install(TARGETS person_following_OR 
+
+# 链接库，${OpenCV_LIBRARIES} 是由新的 find_package(OpenCV) 命令提供的
+target_link_libraries(person_following_OR
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
+
+install(TARGETS person_following_OR
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 
-##############################################################################
-# Test
-##############################################################################
 
-#if(CATKIN_ENABLE_TESTING)
-#  find_package(catkin COMPONENTS rostest rosunit)
-#  include_directories(${GTEST_INCLUDE_DIRS})
-#  catkin_add_gtest(${PROJECT_NAME}-test test/test_${PROJECT_NAME}.cpp)
-#  if(TARGET ${PROJECT_NAME}-test)
-#    target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME} ${GTEST_LIBRARIES})
-#  endif()
-#endif()
-
+#
+# add_executable(person_following
+#   src/person_following.cpp
+# )
+# target_link_libraries(person_following ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
+# install(TARGETS person_following RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

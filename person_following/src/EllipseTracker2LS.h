@@ -13,14 +13,12 @@
 #pragma once
 
 #define _USE_MATH_DEFINES
-#include <cmath> // SUGGESTION: 使用 cmath 替代 math.h
-
+#include <cmath> 
 #include <vector>
 #include <memory>
 #include <algorithm>
 #include <random>
 #include <deque> // FIX: 缺少 deque 头文件
-
 #include <opencv2/opencv.hpp>
 
 //楕円追跡パーティクルフィルタ
@@ -43,10 +41,8 @@ private:
 	const int TMPL_CNUM = 36; //10度刻み
 	//状態次元（画素x，画素y，向き度数(右手0，右回り)）
 	const int dim = 3;
-
 	bool flg_exp_calced = false;
 	std::mt19937 random;
-
 	int ellipse_width = 24;
 	int ellipse_height = 10;
 
@@ -243,7 +239,8 @@ private:
 			}
 			if (ellipse_maxd < 0) ellipse_maxd = 30000 * 0.05;
 
-			const double sigma = 5;
+			// const double sigma = 5;
+			const double sigma = 10;
 			double e = exp(-ellipse_maxd * ellipse_maxd / sigma / sigma + EvalCount);
 
 			const double EPS = 1.0e-7;

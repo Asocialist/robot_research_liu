@@ -1,25 +1,35 @@
-#include <vector>
-#include <stdio.h>
-#include <string.h>
-#include <cmath>
-#include <opencv2/opencv.hpp>
-#include <deque> // FIX: Add missing header
+/*changed by liu to fit opencv4  */
 
-#include "EllipseTracker2LS.h" // FIX: Include correct tracker
+#include <vector>
+#include <string>
+#include <iostream>
+
 #include "ros/ros.h"
-#include "json11.hpp" // FIX: Add missing header
 #include "sensor_msgs/LaserScan.h"
 #include "geometry_msgs/Pose2D.h"
 
-// FIX: Remove M_PI macro redefinition
-// #define M_PI 3.141592653589793238
+#include <opencv2/opencv.hpp>
+
+#include "MyEllipseNormalEvaluation_2LS.h"
+#include "MyCondensation.h"
+#include "json11.hpp"
+// ////////////////
+// // Defines
+// ////////////////
+
+#define M_PI 3.14159265358979
+
+// ////////////////
+// // Variables
+// ////////////////
 
 // マウスイベントの取得
 bool lbPressed = false;
 int lbX = 0;
 int lbY = 0;
 
-void mouseCallback(int event, int x, int y, int, void*)
+// マウスコールバック関数
+void mouseCallback(int event, int x, int y, int flag, void *param)
 {
 	if (event == cv::EVENT_LBUTTONDOWN)
 	{
@@ -30,34 +40,46 @@ void mouseCallback(int event, int x, int y, int, void*)
 	return;
 }
 
+// 追跡中フラグ
+int isTracked = 0;
+int aveIntensity = 0;
+
 // 定数
-float Scale = 0.075f;
-cv::Size windowSize;
-float ThresL = 3000;
-float ThresM = 1000;
-float ThresS = 100;
+float Scale = 0.075f;  //元0.1f
+cv::Point windowSize;
+
+float ThresL = 3000;	 // 遠距離のしきい値(3000=3m)
+float ThresM = 1000;	 // 中距離のしきい値(1000=1m)
+//float ThresS = 200;		 // 近距離のしきい値(200=20cm)
+float ThresS = 100;		 // 近距離のしきい値(100=10cm)
 
 class ScanMessageHandler
 {
-protected: 
+	protected: // 定数
 	static constexpr int DEF_SCAN_STEP_MAX = 1080;
 	static constexpr double DEF_ANGLE_OFFSET = M_PI;
-public:
+	public:
 	static constexpr double SCAN_DISTANCE_MAGNIFICATION = 1000.0;
+
+	public: // 設定(グローバル)
 	static double RetroreflectiveIntensity;
-public: 
+
+	public: // 設定(ローカル)
 	std::string topicName;
 	double offsetX = 0;
 	double offsetY = 0;
 	double offsetT = 0;
-public: 
+
+	public: // 取得データ
 	std::vector<int> urgDistance;
 	std::vector<int> urgIntensity;
+	std::vector<int> urgIntensityRaw;
 	std::vector<double> sinVal;
 	std::vector<double> cosVal;
 	std::vector<cv::Point2d> drawPosition;
 
-public:
+
+	public:
 	void TopicCallbackFunction(const sensor_msgs::LaserScan::ConstPtr &msg){
 		if(dataSize != msg->ranges.size()){
 			urgDistance.resize(msg->ranges.size());
@@ -71,6 +93,7 @@ public:
 			urgDistance[i] = msg->ranges[i] * SCAN_DISTANCE_MAGNIFICATION;
 			urgIntensity[i] = msg->intensities[i];
 		}
+
 		IntensityNormalization();
 		CalcDrawPosition();
 		return;
@@ -83,28 +106,89 @@ public:
 		dataSize = 0;
 	}
 
-protected:
+	protected:
 	void CreateTrigonometricTable(double angle_min, double angle_increment, int num)
 	{
 		sinVal.resize(num);
 		cosVal.resize(num);
+
 		for(int i = 0; i < num; i ++){
 			sinVal[i] = sin(angle_min + angle_increment * i + offsetT + DEF_ANGLE_OFFSET);
 			cosVal[i] = cos(angle_min + angle_increment * i + offsetT + DEF_ANGLE_OFFSET);
-			// sinVal[i] = sin(angle_min + angle_increment * i);
-			// cosVal[i] = cos(angle_min + angle_increment * i);
 		}
 	}
 
 	void IntensityNormalization()
 	{
-		int arrayMinimal = std::min((int)urgDistance.size(), (int)urgIntensity.size());
+		// 反射強度正規化用一時変数
+		int x[DEF_SCAN_STEP_MAX], y[DEF_SCAN_STEP_MAX];
+		double URG_Intensity_I[DEF_SCAN_STEP_MAX];
+		double angle[DEF_SCAN_STEP_MAX], a_1[DEF_SCAN_STEP_MAX], a_2[DEF_SCAN_STEP_MAX], b_1[DEF_SCAN_STEP_MAX], b_2[DEF_SCAN_STEP_MAX], c[DEF_SCAN_STEP_MAX];
+		//レーザセンサの反射強度正規化
+		int arrayMinimal = std::min({urgDistance.size(), urgIntensity.size()/*, DEF_SCAN_STEP_MAX*/});
 		for (int i = 0; i < arrayMinimal; i++)
 		{
-            double normalized_intensity = (double)urgIntensity[i] * pow((double)urgDistance[i], 0.5);
-			urgIntensity[i] = std::round(normalized_intensity / RetroreflectiveIntensity * 255.0);
-			if (urgIntensity[i] > 255) urgIntensity[i] = 255;
-			if (urgIntensity[i] < 0) urgIntensity[i] = 0;
+
+
+			//前の点と張る面の法線ベクトルと、次の点と張る面の法線ベクトルの平均を取って点の法線ベクトルとする
+
+			int bi=i>0?i-1:i+1;
+			int ni=i<arrayMinimal-1?i+1:i-1;
+			// //視点位置
+			// cv::Vec2d op(0, 0);
+			//観測点
+			cv::Vec2d dp (urgDistance[i]  * sinVal[i],  urgDistance[i]  * cosVal[i]);
+			//前の観測点
+			cv::Vec2d bdp(urgDistance[bi] * sinVal[bi], urgDistance[bi] * cosVal[bi]);
+			//次の観測点
+			cv::Vec2d ndp(urgDistance[ni] * sinVal[ni], urgDistance[ni] * cosVal[ni]);
+			//視線ベクトル
+			//cv::Vec2d viewv = dp-op; viewv/=cv::norm(viewv);
+			cv::Vec2d viewv = dp; viewv/=cv::norm(viewv);
+			//法線ベクトル
+			cv::Vec2d np;
+			//2点間距離閾値
+			const double DP_THRESH=200; //200mm
+
+			if(bi==ni){
+				//隣の点とだけ評価
+				cv::Vec2d v=ndp-dp;
+				double nl = cv::norm(v);
+				if(nl>DP_THRESH){
+					np = viewv; //遠すぎたら不採用
+				}else{
+					np=cv::Vec2d(-v[1],v[0]); //90度回転
+				}
+			}else{
+				//前後合わせて評価
+				cv::Vec2d bv = bdp-dp;
+				double bnl = cv::norm(bv);
+				cv::Vec2d nv = ndp-dp;
+				double nnl = cv::norm(nv);
+				if(bnl>DP_THRESH && nnl>DP_THRESH){
+					np = viewv; //遠すぎたら不採用
+				}else if(bnl>DP_THRESH){
+					np=cv::Vec2d(-nv[1],nv[0]); //次だけ採用
+				}else if(nnl>DP_THRESH){
+					np=cv::Vec2d(-bv[1],bv[0]); //前だけ採用
+				}else{
+					np = cv::Vec2d(-nv[1],nv[0]) + cv::Vec2d(-bv[1],bv[0]);//両方採用
+				}
+			}
+			np/=cv::norm(np); //正規化
+			
+			//法線ベクトルと視線ベクトルの内積からcos(入射角)計算
+			angle[i] = np.dot(viewv);
+
+			// URG_Intensity_I[i] = urgIntensity[i] * pow((double)urgDistance[i], (double)0.287) / pow((double)angle[i], (double)0.196); //反射強度の正規化 正規化値=計測値*r^0.287/cos^0.196(x) (r:距離,cosx:表面法線に対する入射角)
+			URG_Intensity_I[i] = urgIntensity[i] * pow((double)urgDistance[i], (double)0.5);//反射強度の正規化 正規化値=計測値*r^0.287/cos^0.196(x) (r:距離,cosx:表面法線に対する入射角)
+			//修正点r^0.287 -> r^0.5
+			urgIntensity[i] = std::round (URG_Intensity_I[i] / RetroreflectiveIntensity * 255);
+			if (urgIntensity[i] > 255)
+				urgIntensity[i] = 255;
+			if (urgIntensity[i] < 0)
+				urgIntensity[i] = 0;
+
 		}
 	}
 
@@ -113,25 +197,33 @@ protected:
 		if(drawPosition.size() != dataSize){
 			drawPosition.resize(dataSize);
 		}
-		int arrayMinimal = urgDistance.size();
+		int arrayMinimal = std::min({urgDistance.size()});
 		for (int i = 0; i < arrayMinimal; i++)
 		{
-			if (urgDistance[i] > ThresS && urgDistance[i] < ThresL)
+			if (urgDistance[i] > ThresS && urgDistance[i] < ThresL) //コメント文だった
 			{
-				drawPosition[i].x = std::round(urgDistance[i] * Scale * sinVal[i]) + windowSize.width * 0.5 - offsetY * Scale;
-				drawPosition[i].y = std::round(urgDistance[i] * Scale * cosVal[i]) + windowSize.height * 0.5 - offsetX * Scale;
+				drawPosition[i].x = std::round (urgDistance[i] * Scale * sinVal[i]) + windowSize.x * 0.5 - offsetY * Scale;
+    			drawPosition[i].y = std::round (urgDistance[i] * Scale * cosVal[i]) + windowSize.y * 0.5 - offsetX * Scale;
 			}
 		}
 	}
 
-protected:
+	protected: // ローカル変数
 	int dataSize = 0;
 };
 double ScanMessageHandler::RetroreflectiveIntensity;
 
+
+// ////////////////
+// // Functions
+// ////////////////
+
 int main(int argc, char **argv)
 {
-	std::string NodeName = "person_following_multi_OR";
+	using namespace cv;
+    
+	// ---Configure---
+	std::string NodeName = "person_following_multi";
 	std::string TopicNameTrackingPosition = "pose_person_following";
 	double OutputTopicOffsetPoseX = 0;
 	double OutputTopicOffsetPoseY = 0;
@@ -139,299 +231,358 @@ int main(int argc, char **argv)
 
 	double StartTrackingIntensityMin = 80;
 	double StartTrackingDistanceMax  = 2200;
-	double StopTrackingIntensity 	= 32;	
+	double StopTrackingIntensity 	= 32;
 	ScanMessageHandler::RetroreflectiveIntensity  = 200000;
 
-	windowSize = cv::Size(640, 640);
+	Point windowSize; // 使用 cv::Point
+	windowSize = Point(640, 640);
+
 	std::vector<ScanMessageHandler> handlerList;
-	int OffsetX[2] = {0,0};
-	int OffsetY[2] = {0,0};
-	double OffsetT[2] = {0,0};
+	handlerList.push_back(ScanMessageHandler());
+	handlerList.back().SetOffset(0, 0, 0);
+	handlerList.back().topicName = "scan";
 
-// ... 在 main 函数的开头 ...
+	int OffsetX[2];
+	int OffsetY[2];
+	double OffsetT[2];
 
-	if (argc >= 2) {
-		// FIX: 使用 LoadJsonFile 来读取和解析文件，而不是直接解析路径字符串
-		auto configure = json11::LoadJsonFile(argv[1]); 
-
-        // 检查文件是否成功读取和解析
-		if (configure.is_null()) {
-			std::cerr << "Failed to load or parse JSON file: " << argv[1] << std::endl;
-            return 1; // 如果失败，直接退出
-        } 
-        else {
-            NodeName = configure["NodeName"].is_null() ? NodeName : configure["NodeName"].string_value();
-			StartTrackingIntensityMin = configure["StartTrackingIntensityMin"].is_null() ? StartTrackingIntensityMin : configure["StartTrackingIntensityMin"].number_value();
-	        StartTrackingDistanceMax = configure["StartTrackingDistanceMax"].is_null() ? StartTrackingDistanceMax : configure["StartTrackingDistanceMax"].number_value();
-	        StopTrackingIntensity = configure["StopTrackingIntensity"].is_null() ? StopTrackingIntensity : configure["StopTrackingIntensity"].number_value();
-			TopicNameTrackingPosition = configure["TopicNamePublishPosition"].is_null() ? TopicNameTrackingPosition : configure["TopicNamePublishPosition"].string_value();
-	        ScanMessageHandler::RetroreflectiveIntensity = configure["RetroreflectiveIntensity"].is_null() ? ScanMessageHandler::RetroreflectiveIntensity : configure["RetroreflectiveIntensity"].number_value();
+	// ---Configure--- (JSON加载逻辑不变)
+	{// ---Load configure---
+	    if (argc >= 2) {
+	        auto configure = json11::LoadJsonFile(argv[1]);
+	        if (configure == nullptr) {
+	            std::cerr << "cannnoot read configure file." << std::endl;
+	        }
+	        else{
+	            NodeName                     = configure["NodeName"].is_null() ? NodeName : configure["NodeName"].string_value();
+				StartTrackingIntensityMin    = configure["StartTrackingIntensityMin"].is_null() ? StartTrackingIntensityMin : configure["StartTrackingIntensityMin"].number_value();
+	            StartTrackingDistanceMax     = configure["StartTrackingDistanceMax"].is_null() ? StartTrackingDistanceMax : configure["StartTrackingDistanceMax"].number_value();
+	            StopTrackingIntensity        = configure["StopTrackingIntensity"].is_null() ? StopTrackingIntensity : configure["StopTrackingIntensity"].number_value();
+				TopicNameTrackingPosition    = configure["TopicNamePublishPosition"].is_null() ? TopicNameTrackingPosition : configure["TopicNamePublishPosition"].string_value();
+	            ScanMessageHandler::RetroreflectiveIntensity = configure["RetroreflectiveIntensity"].is_null() ? ScanMessageHandler::RetroreflectiveIntensity : configure["RetroreflectiveIntensity"].number_value();
 	            
-			windowSize.width = configure["ImageSize"]["x"].is_null() ? windowSize.width : configure["ImageSize"]["x"].int_value();
-			windowSize.height = configure["ImageSize"]["y"].is_null() ? windowSize.height : configure["ImageSize"]["y"].int_value();
+				windowSize.x = configure["ImageSize"]["x"].is_null() ? windowSize.x : configure["ImageSize"]["x"].number_value();
+				windowSize.y = configure["ImageSize"]["y"].is_null() ? windowSize.y : configure["ImageSize"]["y"].number_value();
 				
-			OutputTopicOffsetPoseX = configure["OutputOffset"]["x"].is_null() ? OutputTopicOffsetPoseX : configure["OutputOffset"]["x"].number_value();
-			OutputTopicOffsetPoseY = configure["OutputOffset"]["y"].is_null() ? OutputTopicOffsetPoseY : configure["OutputOffset"]["y"].number_value();
-			OutputTopicOffsetPoseT = configure["OutputOffset"]["theta"].is_null() ? OutputTopicOffsetPoseT : configure["OutputOffset"]["theta"].number_value() - (0.5 * M_PI);
+				OutputTopicOffsetPoseX = configure["OutputOffset"]["x"].is_null() ? OutputTopicOffsetPoseX : configure["GlobalOffset"]["x"].number_value();
+				OutputTopicOffsetPoseY = configure["OutputOffset"]["y"].is_null() ? OutputTopicOffsetPoseY : configure["GlobalOffset"]["y"].number_value();
+				OutputTopicOffsetPoseT = configure["OutputOffset"]["theta"].is_null() ? OutputTopicOffsetPoseT : configure["GlobalOffset"]["theta"].number_value() - (0.5 * M_PI);
 
-			ThresS = configure["ThresholdDistance"]["short"].is_null() ? ThresS : configure["ThresholdDistance"]["short"].number_value();
-			ThresM = configure["ThresholdDistance"]["medium"].is_null() ? ThresM : configure["ThresholdDistance"]["medium"].number_value();
-			ThresL = configure["ThresholdDistance"]["long"].is_null() ? ThresL : configure["ThresholdDistance"]["long"].number_value();
+				ThresS = configure["ThresholdDistance"]["short"].is_null() ? windowSize.x : configure["ThresholdDistance"]["short"].number_value();
+				ThresM = configure["ThresholdDistance"]["medium"].is_null() ? windowSize.y : configure["ThresholdDistance"]["medium"].number_value();
+				ThresL = configure["ThresholdDistance"]["long"].is_null() ? windowSize.x : configure["ThresholdDistance"]["long"].number_value();
 
-			if(configure["ScanList"].is_array()){
-				auto slist = configure["ScanList"].array_items();
-				if(!slist.empty()){
-					handlerList.clear();
-					int i = 0;
-					for(const auto &itr : slist){
-						if(i >= 2 || itr["Offset"]["x"].is_null() || itr["Offset"]["y"].is_null() || itr["Offset"]["theta"].is_null() || itr["TopicName"].is_null()){
-							continue;
+				if(configure["ScanList"].is_array()){
+					auto slist = configure["ScanList"].array_items();
+					if(slist.size() != 0){
+						handlerList.clear();
+						int i = 0;
+						for(const auto &itr : slist){
+							if(itr["Offset"]["x"].is_null() || itr["Offset"]["y"].is_null() || itr["Offset"]["theta"].is_null() || itr["TopicName"].is_null()){
+								continue;
+							}
+							OffsetX[i] = -itr["Offset"]["y"].number_value() * Scale + windowSize.x/2;
+							OffsetY[i] = -itr["Offset"]["x"].number_value() * Scale + windowSize.y/2;
+							OffsetT[i] = -itr["Offset"]["theta"].number_value();
+
+							handlerList.push_back(ScanMessageHandler());
+							handlerList.back().SetOffset(itr["Offset"]["x"].number_value(), itr["Offset"]["y"].number_value(), itr["Offset"]["theta"].number_value());
+							handlerList.back().topicName = itr["TopicName"].string_value();
+
+							++i;
 						}
-						OffsetX[i] = -itr["Offset"]["y"].number_value() * Scale + windowSize.width/2;
-						OffsetY[i] = -itr["Offset"]["x"].number_value() * Scale + windowSize.height/2;
-						OffsetT[i] = -itr["Offset"]["theta"].number_value();
-
-						handlerList.push_back(ScanMessageHandler());
-						handlerList.back().SetOffset(itr["Offset"]["x"].number_value(), itr["Offset"]["y"].number_value(), itr["Offset"]["theta"].number_value());
-						handlerList.back().topicName = itr["TopicName"].string_value();
-						i++;
 					}
 				}
-			}
-        }
-	} else {
-        std::cerr << "Error: No JSON configuration file provided." << std::endl;
-        return 1;
-    }
+	        }
 
-// ... main 函数的其余部分保持不变 ...
-	
-	const int OffsetX_ = windowSize.width  * 0.5;
-	const int OffsetY_ = windowSize.height * 0.5;
+	    }
+	    else {
+	        //     std::cerr << "invalid argument." << std::endl;
+	        //     exit(1);
+	    }
+	}// ---Load configure---
 
-    // FIX: Correct Mat initialization and access
-	std::vector<cv::Mat> sensorVisibleRange(2);
+	const int OffsetX_ = windowSize.x * 0.5;
+	const int OffsetY_ = windowSize.y * 0.5;
+
+    // 创建 sensorVisibleRange
+	Mat sensorVisibleRange[2] = {
+        Mat(Size(windowSize.x, windowSize.y), CV_8UC1),
+        Mat(Size(windowSize.x, windowSize.y), CV_8UC1)
+    };
 	for(int i=0;i<2;++i){
-        sensorVisibleRange[i] = cv::Mat::zeros(windowSize, CV_8UC1);
+		sensorVisibleRange[i].setTo(Scalar(0));
 		double oft = OffsetT[i]+M_PI*0.5;
-		cv::Vec2d ofv(cos(oft),sin(oft));
-		// double costh=cos(0.25*M_PI);
+		Vec2d ofv(cos(oft),sin(oft));
 		double costh=cos(0.25*M_PI);
 		for(int r=0;r<sensorVisibleRange[i].rows;++r){
-            for(int c=0;c<sensorVisibleRange[i].cols;++c){
-                cv::Vec2d pv(c-OffsetX[i], r-OffsetY[i]);
-                if(cv::norm(pv) < 1e-6) continue;
-                double co=pv.dot(ofv)/cv::norm(pv);
-                sensorVisibleRange[i].at<uint8_t>(r,c) = (co<costh)?255:0;
-            }
-        }
+		for(int c=0;c<sensorVisibleRange[i].cols;++c){
+			Vec2d pv(c-OffsetX[i], r-OffsetY[i]);
+			double co=pv.dot(ofv)/cv::norm(pv);
+			sensorVisibleRange[i].at<uchar>(r, c) = (co<costh)?255:0;
+		}}
 	}
-	if(sensorVisibleRange.size() == 2){
-		cv::Mat ___t = cv::Mat::zeros(windowSize, CV_8UC1);
-		cv::bitwise_not(sensorVisibleRange[1], ___t);
-		cv::bitwise_and(sensorVisibleRange[0], ___t, sensorVisibleRange[0]);
+	{
+		Mat tempNot;
+        bitwise_not(sensorVisibleRange[1], tempNot);
+        bitwise_and(sensorVisibleRange[0], tempNot, sensorVisibleRange[0]);
 	}
-    //test display of sensor visible range
-	// cv::imshow("vis0", sensorVisibleRange[0]);
-	// cv::imshow("vis1", sensorVisibleRange[1]);
-	// cv::waitKey(0);
-	// cv::destroyWindow("vis0");
-	// cv::destroyWindow("vis1");
 
+	// ---ROS Initialize---
 	ros::init(argc, argv, NodeName.c_str());
 	ros::NodeHandle nodeHandle;
-
 	std::vector<ros::Subscriber> subscLaserScan;
-	for(size_t i = 0; i < handlerList.size(); i++){
-		subscLaserScan.push_back(nodeHandle.subscribe(handlerList[i].topicName.c_str(), 100, &ScanMessageHandler::TopicCallbackFunction, &handlerList[i]));
+	for(int i = 0; i < handlerList.size(); i++){
+		subscLaserScan.push_back(nodeHandle.subscribe(handlerList[i].topicName.c_str(), 100, &ScanMessageHandler::TopicCallbackFunction, &(handlerList[i])));
 	}
-	
 	ros::Publisher pubPosePersonFollowing = nodeHandle.advertise<geometry_msgs::Pose2D>(TopicNameTrackingPosition.c_str(), 100);
 	geometry_msgs::Pose2D msgPosePersonFollowing;
 
-	cv::Mat baseImage(windowSize, CV_8UC3);
-	cv::Mat distanceImage(windowSize, CV_8UC3);
-	cv::Mat intensityImage(windowSize, CV_8UC1);
-	cv::Mat maskImage(windowSize, CV_8UC1);
-	cv::Mat maskImageBinInv(windowSize, CV_8UC1);
-	cv::Mat distanceImage2(windowSize, CV_8UC3);
-	cv::Mat intensityImage2(windowSize, CV_8UC1);
-	cv::Mat dispImage(windowSize, CV_8UC3);
-	cv::Mat distImage(windowSize, CV_8UC1);
-	cv::Mat distImageNot(windowSize, CV_8UC1);
-	cv::Mat transImage(windowSize, CV_32FC1); // Changed from 8UC1 to 32FC1 for distanceTransform result
-	cv::Mat dispImage2(windowSize, CV_8UC3);
+    // ================== 使用 cv::Mat 声明所有图像 ==================
+    Size imageSize(windowSize.x, windowSize.y);
+	Mat baseImage(imageSize, CV_8UC3, Scalar(0, 0, 0));
+	Mat distanceImage(imageSize, CV_8UC3, Scalar(0, 0, 0));
+	Mat intensityImage(imageSize, CV_8UC3, Scalar(0, 0, 0));
+	Mat maskImage(imageSize, CV_8UC1, Scalar(0));
+	Mat maskImageBinInv(imageSize, CV_8UC1, Scalar(0));
+	Mat distanceImage2(imageSize, CV_8UC3, Scalar(0, 0, 0));
+	Mat intensityImage2(imageSize, CV_8UC3, Scalar(0, 0, 0));
+    Mat dispImage(imageSize, CV_8UC3);
+	Mat distImage(imageSize, CV_8UC1);
+	Mat distImageNot(imageSize, CV_8UC1);
+	Mat transImage(imageSize, CV_32F);
+	Mat dispImage2(imageSize, CV_8UC3);
 
-	baseImage.setTo(cv::Scalar(0,0,0));
-    // FIX: use std::round and cv::Scalar
-	cv::circle(baseImage, cv::Point(std::round(OffsetX_), std::round(OffsetY_)), 4, cv::Scalar(64, 64, 64), -1);
-	for (int jj = 0; jj < 1080; jj++) {
-		double angle = (jj * 0.25) * (M_PI / 180);
-		cv::circle(baseImage, cv::Point(std::round(ThresS * Scale * sin(angle)) + OffsetX_, std::round(ThresS * Scale * cos(angle)) + OffsetY_), 1, cv::Scalar(64, 64, 64), -1);
-		cv::circle(baseImage, cv::Point(std::round(ThresM * Scale * sin(angle)) + OffsetX_, std::round(ThresM * Scale * cos(angle)) + OffsetY_), 1, cv::Scalar(32, 32, 32), -1);
-		cv::circle(baseImage, cv::Point(std::round(ThresL * Scale * sin(angle)) + OffsetX_, std::round(ThresL * Scale * cos(angle)) + OffsetY_), 1, cv::Scalar(64, 64, 64), -1);
+	// センサ位置と観測範囲の描画
+	constexpr int SCAN_STEP_NUM = 1080;
+	const float Rotate = 45;
+	circle(baseImage, Point(round(OffsetX_), round(OffsetY_)), 4, Scalar(64, 64, 64), -1, 8);
+	for (int jj = 0; jj < SCAN_STEP_NUM; jj++)
+	{
+		double angle = (jj * 0.25 + Rotate) * (M_PI / 180);
+		circle(baseImage, Point(round(ThresS * Scale * sin(angle)) + OffsetX_, round(ThresS * Scale * cos(angle)) + OffsetY_), 1, Scalar(64, 64, 64), -1, 8);
+		circle(baseImage, Point(round(ThresM * Scale * sin(angle)) + OffsetX_, round(ThresM * Scale * cos(angle)) + OffsetY_), 1, Scalar(32, 32, 32), -1, 8);
+		circle(baseImage, Point(round(ThresL * Scale * sin(angle)) + OffsetX_, round(ThresL * Scale * cos(angle)) + OffsetY_), 1, Scalar(64, 64, 64), -1, 8);
 	}
 
-	cv::namedWindow("Display Image", cv::WINDOW_AUTOSIZE);
-    cv::namedWindow("Intensity Image", cv::WINDOW_AUTOSIZE);
-	cv::setMouseCallback("Display Image", mouseCallback);
-    
-    // FIX: Use modern tracker from its header
-	std::vector<cv::Vec2d> lidarPos;
-    if(handlerList.size() >= 2){
-        lidarPos.push_back({(double)OffsetX[0], (double)OffsetY[0]});
-        lidarPos.push_back({(double)OffsetX[1], (double)OffsetY[1]});
-    }
-	EllipseTracker2LSPool trackers(1, 300, 18, 11, lidarPos, sensorVisibleRange);
-    bool isTracked = false;
-    double aveIntensity = 0;
+	// ================== OpenCV 窗口和鼠标设置 ==================
+	namedWindow("Display Image", WINDOW_AUTOSIZE);
+	setMouseCallback("Display Image", mouseCallback);
 
+	// ================== 粒子滤波器准备 (现代C++版本) ==================
+	MyCondensation *ConDens = myCreateConDensation(3, 300);
+	Mat initValue = Mat::zeros(3, 1, CV_32F);
+	Mat initMean = Mat::zeros(3, 1, CV_32F);
+	Mat initDeviation = Mat::zeros(3, 1, CV_32F);
+
+	initValue.at<float>(2) = 1080.0f; // 只有角度有初始值
+	
+	initDeviation.at<float>(0) = 5.0f;
+	initDeviation.at<float>(1) = 5.0f;
+	initDeviation.at<float>(2) = 20.0f;
+	
+	myConDensInitSampleSet(ConDens, initValue, initMean, initDeviation);
+	myConDensUpdateSample(ConDens);
+	
+    // **重要**: 以下自定义函数的签名必须在.h文件中被修改
+	SetSensorPosition_2LS(0, Point(OffsetX[0], OffsetY[0]));
+	SetSensorPosition_2LS(1, Point(OffsetX[1], OffsetY[1]));
+	SetSensorVisibleRange_2LS(0, sensorVisibleRange[0]);
+	SetSensorVisibleRange_2LS(1, sensorVisibleRange[1]);
+	StoreBodyContourPosition_2LS(18, 11, 10);
+	StoreHeadContourPosition_2LS(9, 10);
+	int prevusrU = -1;
+	int prevusrV = -1;
+	int prevusrAngl = -1;
+
+	// ================== 主循环 ==================
 	ros::Rate loop_rate(60);
 	while (ros::ok())
 	{
 		baseImage.copyTo(dispImage);
-		distanceImage.setTo(cv::Scalar(0));
-		intensityImage.setTo(cv::Scalar(0));
-		maskImage.setTo(cv::Scalar(0));
-		maskImageBinInv.setTo(cv::Scalar(0));
-		dispImage2.setTo(cv::Scalar(0));
-		distanceImage2.setTo(cv::Scalar(0));
-		intensityImage2.setTo(cv::Scalar(0));
+		baseImage.copyTo(distanceImage);
+		intensityImage.setTo(Scalar(0,0,0));
+		maskImage.setTo(Scalar(0));
+		maskImageBinInv.setTo(Scalar(0));
+		baseImage.copyTo(dispImage2);
+		baseImage.copyTo(distanceImage2);
+		intensityImage2.setTo(Scalar(0,0,0));
 		
-		int loopNumber = 0;
+		int loopNumber = 1;
 		for(const auto &itr : handlerList){
-            cv::Mat& currentDistImg = (loopNumber == 0) ? distanceImage : distanceImage2;
-            cv::Mat& currentIntenImg = (loopNumber == 0) ? intensityImage : intensityImage2;
-            cv::Mat& currentDispImg = (loopNumber == 0) ? dispImage : dispImage2;
-
-			for (size_t i = 0; i < itr.drawPosition.size(); i++)
+			for (int i = 0; i < itr.drawPosition.size(); i++)
 			{
-                // FIX: cv::Scalar, added bounds check
-                int color1 = itr.urgIntensity[i] * 4 + 64;
-                if(color1 > 255) color1 = 255;
-				cv::circle(currentDistImg, itr.drawPosition[i], 1, cv::Scalar(255, 255, 0), -1);
-				cv::circle(currentIntenImg, itr.drawPosition[i], 1, cv::Scalar(itr.urgIntensity[i]), -1);
-				cv::circle(currentDispImg, itr.drawPosition[i], 1, cv::Scalar(color1, color1, 64), -1);
-			}
-
-			if(loopNumber == 0 && handlerList.size() > 1){
-				// ... (Masking logic seems complex and might need specific debugging)
+				if (itr.urgDistance[i] > ThresS && itr.urgDistance[i] < ThresL && loopNumber == 1)
+				{
+					circle(distanceImage, itr.drawPosition[i], 1, Scalar(255, 255, 0), -1, 8);
+					circle(intensityImage, itr.drawPosition[i], 1, Scalar(itr.urgIntensity[i], itr.urgIntensity[i], itr.urgIntensity[i]), -1, 8);
+					int color1 = itr.urgIntensity[i] * 4 + 64;
+					circle(dispImage, itr.drawPosition[i], 1, Scalar(color1, color1, 64), -1, 8);
+				}
+				if (itr.urgDistance[i] > ThresS && itr.urgDistance[i] < ThresL && loopNumber == 2)
+				{
+					circle(distanceImage2, itr.drawPosition[i], 1, Scalar(255, 255, 0), -1, 8);
+					circle(intensityImage2, itr.drawPosition[i], 1, Scalar(itr.urgIntensity[i], itr.urgIntensity[i], itr.urgIntensity[i]), -1, 8);
+					int color1 = itr.urgIntensity[i] * 4 + 64;
+					circle(dispImage2, itr.drawPosition[i], 1, Scalar(color1, color1, 64), -1, 8);
+				}
+				if( loopNumber == 1 && (i == 0 || i == (itr.drawPosition.size() - 1)) )
+				{
+					std::vector<Point> pPolyPoints1(4);
+					std::vector<Point> pPolyPoints2(4);
+					if(i == 0 && itr.offsetY > 0)
+					{
+						double kouten_x1 = -itr.drawPosition[i].y * ( ( itr.drawPosition[i].x - (windowSize.x * 0.5 - itr.offsetY * Scale) ) / ( itr.drawPosition[i].y - (windowSize.y * 0.5 - itr.offsetX * Scale) ) ) + itr.drawPosition[i].x;
+						pPolyPoints1[0] = Point(0,0);
+						pPolyPoints1[1] = Point(0,windowSize.y * 0.5 - itr.offsetX * Scale);
+						pPolyPoints1[2] = Point(windowSize.x * 0.5 - itr.offsetY * Scale, windowSize.y * 0.5 - itr.offsetX * Scale);
+						pPolyPoints1[3] = Point(kouten_x1,0);
+						fillConvexPoly(maskImage, pPolyPoints1, Scalar(255), 8, 0);
+					}
+					if(i == (itr.drawPosition.size() - 1) && itr.offsetY > 0)
+					{
+						double kouten_x2 = ( ( itr.drawPosition[i].x - (windowSize.x * 0.5 - itr.offsetY * Scale) ) / ( itr.drawPosition[i].y - (windowSize.y * 0.5 - itr.offsetX * Scale) ) ) * (windowSize.y - itr.drawPosition[i].y) + itr.drawPosition[i].x;
+						pPolyPoints2[0] = Point(0, windowSize.y);
+						pPolyPoints2[1] = Point(0, windowSize.y * 0.5 - itr.offsetX * Scale);
+						pPolyPoints2[2] = Point(windowSize.x * 0.5 - itr.offsetY * Scale, windowSize.y * 0.5 - itr.offsetX * Scale);
+						pPolyPoints2[3] = Point(kouten_x2, windowSize.y);
+						fillConvexPoly(maskImage, pPolyPoints2, Scalar(255), 8, 0);
+					}
+					threshold(maskImage, maskImageBinInv, 127, 255, THRESH_BINARY_INV);
+				}
 			}
 			loopNumber++;
 		}
-        
-        cv::add(distanceImage, distanceImage2, distanceImage);
-		cv::add(intensityImage, intensityImage2, intensityImage);
-		cv::circle(intensityImage, cv::Point(OffsetX_, OffsetY_), 4, cv::Scalar(64), -1);
-		// 画最小、最大检测半径
-		for (int jj = 0; jj < 1080; jj++) {
-    	// double angle = (jj * 0.25) * (M_PI / 180);
-
-    	// cv::circle(intensityImage, cv::Point(std::round(ThresS * Scale * sin(angle)) + OffsetX_, std::round(ThresS * Scale * cos(angle)) + OffsetY_), 1, cv::Scalar(64), -1);
-    	// cv::circle(intensityImage, cv::Point(std::round(ThresM * Scale * sin(angle)) + OffsetX_, std::round(ThresM * Scale * cos(angle)) + OffsetY_), 1, cv::Scalar(32), -1);
-    	// cv::circle(intensityImage, cv::Point(std::round(ThresL * Scale * sin(angle)) + OffsetX_, std::round(ThresL * Scale * cos(angle)) + OffsetY_), 1, cv::Scalar(64), -1);
-		// intensityImage 上画完整圆环
-		cv::circle(intensityImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresS * Scale), cv::Scalar(64), 1);
-		cv::circle(intensityImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresM * Scale), cv::Scalar(32), 1);
-		cv::circle(intensityImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresL * Scale), cv::Scalar(64), 1);
-
-		// dispImage 上画完整圆环
-	 	cv::circle(dispImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresS * Scale), cv::Scalar(64, 64, 64), 1);
-		cv::circle(dispImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresM * Scale), cv::Scalar(32, 32, 32), 1);
-		cv::circle(dispImage, cv::Point(OffsetX_, OffsetY_), std::round(ThresL * Scale), cv::Scalar(64, 64, 64), 1);
-	}
-		cv::add(dispImage, dispImage2, dispImage);
-
-		cv::imshow("Intensity Image", intensityImage);
 		
-		cv::cvtColor(distanceImage, distImage, cv::COLOR_BGR2GRAY);
-		cv::threshold(distImage, distImageNot, 64.0, 255.0, cv::THRESH_BINARY_INV);
-		// FIX: Correct distanceTransform call
-        cv::distanceTransform(distImageNot, transImage, cv::DIST_L2, 3);
-        
-        if(!trackers.empty()) {
-		    trackers.next(transImage);
-        }
+		add(distanceImage, distanceImage2, distanceImage, maskImageBinInv);
+		add(intensityImage, intensityImage2, intensityImage, maskImageBinInv);
+		add(dispImage, dispImage2, dispImage, maskImageBinInv);
 
-		int usrU = -100, usrV = -100, usrAngl = 0;
-		if(!trackers.empty()){
-			auto _p = trackers[0]->getPos();
-			usrU = _p[0]; usrV = _p[1]; usrAngl = _p[2];
+		imshow("Intensity Image", intensityImage);
+		
+		cvtColor(distanceImage, distImage, COLOR_BGR2GRAY);
+		threshold(distImage, distImageNot, 64.0, 255.0, THRESH_BINARY_INV);
+		distanceTransform(distImageNot, transImage, DIST_L2, 3);
+		
+		myConDensUpdateSample(ConDens);
 
-            cv::Rect roi = cv::Rect(usrU - 30, usrV - 30, 60, 60) & cv::Rect(0, 0, intensityImage.cols, intensityImage.rows);
-            if(roi.area() > 0) {
-			    cv::Mat intensityImageROI(intensityImage, roi);
-			    aveIntensity = cv::countNonZero(intensityImageROI) > 0 ? cv::sum(intensityImageROI)[0] / cv::countNonZero(intensityImageROI) : 0.0;
-            } else {
-                aveIntensity = 0.0;
-            }
-
-			if (aveIntensity < StopTrackingIntensity) {
-				trackers.removeByOrder(0);
-			}
+		for (int i = 0; i < ConDens->samples_num; ++i)
+		{
+			ConDens->confidence.at<float>(0, i) = CalculateBodyLikelihood_2LS(transImage, 
+                Point(round(ConDens->samples[i].at<float>(0)), round(ConDens->samples[i].at<float>(1))), 
+                round(ConDens->samples[i].at<float>(2)));
 		}
 
-        isTracked = !trackers.empty();
+		myConDensUpdateByTime(ConDens);
 
-		if (!isTracked)
-		{ 
+		int usrU = round(ConDens->state.at<float>(0));
+		int usrV = round(ConDens->state.at<float>(1));
+		int usrAngl = round(ConDens->state.at<float>(2));
+		usrAngl = (usrAngl % 360 + 360) % 360;
+
+		cvtColor(intensityImage, distImage, COLOR_BGR2GRAY);
+		Rect roi_rect(usrU - 30, usrV - 30, 60, 60);
+        roi_rect &= Rect(0, 0, distImage.cols, distImage.rows); 
+        if(roi_rect.area() > 0) {
+            Mat roi = distImage(roi_rect);
+            int nonZeroCount = countNonZero(roi);
+            aveIntensity = (nonZeroCount > 0) ? (int)(sum(roi)[0] / nonZeroCount) : 0;
+        } else {
+            aveIntensity = 0;
+        }
+
+		if (isTracked == 1 && aveIntensity < StopTrackingIntensity)
+		{
+			initValue.at<float>(0) = 0.0f;
+			initValue.at<float>(1) = 0.0f;
+			myConDensInitSampleSet(ConDens, initValue, initMean, initDeviation);
+			myConDensUpdateSample(ConDens);
+			myConDensUpdateByTime(ConDens);
+			isTracked = 0;
+		}
+
+		if (isTracked == 0)
+		{
 			for(const auto &itr : handlerList){
-				for (size_t i = 0; i < itr.urgDistance.size(); i++)
+				for (int i = 0; i < itr.urgDistance.size(); i++)
 				{
 					if (itr.urgDistance[i] < StartTrackingDistanceMax && itr.urgIntensity[i] > StartTrackingIntensityMin)
 					{
-						usrU = std::round((itr.urgDistance[i] * Scale * itr.sinVal[i]) + OffsetX_ - 20);
-						usrV = std::round((itr.urgDistance[i] * Scale * itr.cosVal[i]) + OffsetY_);
-						trackers.add(usrU, usrV, 0); // Use last angle
-						isTracked = true;
+						initValue.at<float>(0) = round((itr.urgDistance[i] * Scale * itr.sinVal[i]) + OffsetX_ - 20);
+						initValue.at<float>(1) = round((itr.urgDistance[i] * Scale * itr.cosVal[i]) + OffsetY_);
+						initValue.at<float>(2) = (float)prevusrAngl;
+						myConDensInitSampleSet(ConDens, initValue, initMean, initDeviation);
+						myConDensUpdateSample(ConDens);
+						myConDensUpdateByTime(ConDens);
+						isTracked = 1;
 						break;
 					}
 				}
-				if(isTracked) break;
+				if(isTracked){
+					break;
+				}
 			}
 		}
 
 		if (lbPressed)
 		{
 			lbPressed = false;
-			if(trackers.empty()) trackers.add(lbX, lbY, 0);
-			else trackers[0]->init(lbX, lbY, 0);
-            isTracked = true;
+			initValue.at<float>(0) = (float)lbX;
+			initValue.at<float>(1) = (float)lbY;
+			myConDensInitSampleSet(ConDens, initValue, initMean, initDeviation);
+			myConDensUpdateSample(ConDens);
+			myConDensUpdateByTime(ConDens);
+			usrU = lbX;
+			usrV = lbY;
+			isTracked = 1;
 		}
 
-		if (isTracked)
+		if (isTracked == 1)
 		{
-            auto _p = trackers[0]->getPos();
-			usrU = _p[0]; usrV = _p[1]; usrAngl = _p[2];
-
-			// FIX: dispimage typo and CV_RGB
-			cv::ellipse(dispImage, cv::Point(usrU, usrV), cv::Size(24,12), usrAngl, 0, 360, cv::Scalar(255,255,255), 2);
-			cv::rectangle(dispImage, cv::Point(usrU - 30, usrV - 30), cv::Point(usrU + 30, usrV + 30), cv::Scalar(255, 255, 255), 1);
-			char mytext[12], angleText[20];
-			sprintf(mytext, "%4.0lf", aveIntensity);
-			cv::putText(dispImage, mytext, cv::Point(usrU + 30, usrV + 30), cv::FONT_HERSHEY_COMPLEX_SMALL, 0.7, cv::Scalar(255, 255, 255));
-			sprintf(angleText, "Ang: %d", (int)std::round(usrAngl));
-			cv::putText(dispImage, angleText, cv::Point(usrU + 30, usrV + 50), cv::FONT_HERSHEY_COMPLEX_SMALL, 0.7, cv::Scalar(255, 255, 255));
+			DrawBodyContour_2LS(dispImage, Point(usrU, usrV), usrAngl);
+			rectangle(dispImage, Point(usrU - 30, usrV - 30), Point(usrU + 30, usrV + 30), Scalar(255, 255, 255), 1, 8, 0);
+			if (aveIntensity < 0) aveIntensity = 0;
+			char mytext[12];
+			sprintf(mytext, "%4d", aveIntensity);
+			putText(dispImage, mytext, Point(usrU + 30, usrV + 30), FONT_HERSHEY_COMPLEX_SMALL, 0.7, Scalar(255, 255, 255));
 		
+			char angleText[12];
+			sprintf(angleText, "Ang: %3d", usrAngl);
+			putText(dispImage, angleText, Point(usrU + 30, usrV + 50), FONT_HERSHEY_COMPLEX_SMALL, 0.7, Scalar(255, 255, 255));
+		}
+
+		if (isTracked == 1 && (usrU != 0 && usrV != 0))
+		{
 			double rotX = (usrU - OffsetX_) * cos(OutputTopicOffsetPoseT) - (usrV - OffsetY_) * sin(OutputTopicOffsetPoseT);
 			double rotY = (usrU - OffsetX_) * sin(OutputTopicOffsetPoseT) + (usrV - OffsetY_) * cos(OutputTopicOffsetPoseT);
 			msgPosePersonFollowing.x = OutputTopicOffsetPoseX + (-1.0) * rotX / (ScanMessageHandler::SCAN_DISTANCE_MAGNIFICATION * Scale);
 			msgPosePersonFollowing.y = OutputTopicOffsetPoseY - (-1.0) * rotY / (ScanMessageHandler::SCAN_DISTANCE_MAGNIFICATION * Scale);
 			msgPosePersonFollowing.theta = OutputTopicOffsetPoseT  + (-usrAngl*M_PI/180.0 + M_PI*1.5);
 			pubPosePersonFollowing.publish(msgPosePersonFollowing);
-
-			// FIX: Use %f for double in ROS_INFO/WARN
-			ROS_WARN("angle= %3.1f", (double)usrAngl);
+			ROS_WARN("angle= %3d", usrAngl);
 			ROS_INFO("msg=%f", msgPosePersonFollowing.theta);
 		}
-		
-		cv::imshow("Display Image", dispImage);
-		if (cv::waitKey(1) == 'q') break;
+
+		if(isTracked == 1){
+			prevusrU=usrU;
+			prevusrV=usrV;
+			prevusrAngl=usrAngl;
+	    }
+
+		imshow("Display Image", dispImage);
+
+		if (waitKey(1) == 'q')
+		{
+			break;
+		}
 
 		ros::spinOnce();
 		loop_rate.sleep();
 	}
 
-	cv::destroyAllWindows();
+	// 内存由 cv::Mat 和 MyCondensation 析构函数自动管理
+    myReleaseConDensation(&ConDens);
+	destroyAllWindows();
+
 	return 0;
 }
