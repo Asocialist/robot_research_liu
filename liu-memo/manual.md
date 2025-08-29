@@ -32,7 +32,7 @@ rosrun gnd_lssmap_maker gnd_lssmap_maker lssmap_maker.conf
 rosbag play offset.bag
 
 roslaunch ros/launchs/icartmini_hw_simulation.launch 
-rosrun gnd_lssmap_maker gnd_lssmap_maker lssmap_maker.conf //twice
+rosrun gnd_lssmap_maker gnd_lssmap_maker lssmap_maker.conf //second
 rosbag play makemap.bag
 ```
 
