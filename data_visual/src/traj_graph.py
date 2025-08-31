@@ -28,36 +28,46 @@ def load_robot_traj():
 
 def plot_robot_traj(df):
     if df.empty:
-        raise ValueError("DataFrame 为空，无法绘制。")
+        raise ValueError("DataFrame is empty exit")
 
     plt.figure(figsize=(6, 6))
-
-    # 绘制轨迹线
-    plt.plot(df["x"], df["y"], marker="o", markersize=2, linewidth=1, label="robot trajectory")
-
-    # 起点
-    plt.scatter(df["x"].iloc[0], df["y"].iloc[0], c="green", s=80, marker="o", label="Start")
-    plt.text(df["x"].iloc[0], df["y"].iloc[0], " Start", color="green", fontsize=10)
-
-    # 终点
-    plt.scatter(df["x"].iloc[-1], df["y"].iloc[-1], c="red", s=80, marker="X", label="End")
-    plt.text(df["x"].iloc[-1], df["y"].iloc[-1], " End", color="red", fontsize=10)
-
-    # 绘制机器人朝向箭头（稀疏取点避免太密）
-    step = max(len(df) // 20, 1)  # 控制箭头数量，默认取大约20个
-    plt.quiver(
-        df["x"][::step], df["y"][::step],
-        np.cos(df["theta"][::step]), np.sin(df["theta"][::step]),
-        angles="xy", scale_units="xy", scale=5, width=0.003, color="blue", alpha=0.6,
-        label="Direction"
-    )
-
     plt.xlabel("X position")
     plt.ylabel("Y position")
     plt.title("Robot Trajectory")
 
+    # 绘制轨迹线
+    plt.plot(df["x"], df["y"], marker=".", markersize=2, linewidth=0.5, label="robot trajectory")
+
+    # 起点
+    plt.scatter(df["x"].iloc[0], df["y"].iloc[0], c="green", s=80, marker="o", label="Start")
+    # plt.text(df["x"].iloc[0], df["y"].iloc[0], " Start", color="green", fontsize=10)
+
+
+    # 终点
+    plt.scatter(df["x"].iloc[-1], df["y"].iloc[-1], c="red", s=80, marker="X", label="End")
+    # plt.text(df["x"].iloc[-1], df["y"].iloc[-1], " End", color="red", fontsize=10)
+
+    a_step = 25 
+    x_q = df["x"][::a_step]
+    y_q = df["y"][::a_step]
+    theta_q = df["theta"][::a_step]
+
+    # 2. 根据角度 theta 计算箭头的 X (u) 和 Y (v) 方向分量
+    u_q = np.cos(theta_q)
+    v_q = np.sin(theta_q)
+
+    # 3. 使用 plt.quiver 绘制箭头
+    #    scale 控制箭头的大小 (值越大，箭头越短)
+    #    width 控制箭头的线条宽度
+    plt.quiver(x_q, y_q, u_q, v_q, 
+               color='blue', 
+               scale=40, 
+               width=0.005,
+               label='Heading')
+    
+
     # 图例放到右下角
-    plt.legend(loc="lower right")
+    plt.legend(loc="upper center", bbox_to_anchor=(0.5, -0.07), ncol=4, frameon=False)
 
     plt.axis("equal")
     plt.grid(True)
