@@ -1,65 +1,76 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
 from pathlib import Path
 
-def plot_xy(draw_orientation=True, step=20):
-    # 获取当前脚本所在目录
-    BASE_DIR = Path(__file__).resolve().parent
-    DATA_DIR = BASE_DIR.parent / "data"   # ../data
 
-    # CSV 文件路径
-    person_csv = DATA_DIR / "person_traj.csv"
-    robot_csv  = DATA_DIR / "robot_traj.csv"
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR.parent / "data"   # ../data
 
-    # 读取数据
-    person = pd.read_csv(person_csv)
-    robot  = pd.read_csv(robot_csv)
+def load_robot_traj():
+    robot_csv = DATA_DIR / "robot_traj.csv"
+    if not robot_csv.exists():
+        raise FileNotFoundError(f"找不到CSV: {robot_csv}")
+    
+    df = pd.read_csv(robot_csv)
 
-    # 提取列
-    px, py, pt = person["field.x"], person["field.y"], person["field.theta"]
-    rx, ry, rt = robot["field.x"],  robot["field.y"],  robot["field.theta"]
+    # 把原始列名改成更方便使用的名字
+    df = df.rename(columns={
+        "field.x": "x",
+        "field.y": "y",
+        "field.theta": "theta",
+        "%time": "time"
+    })
 
-    # 绘图
-    plt.figure(figsize=(7,7))
-    plt.plot(rx, ry, label="Robot")
-    plt.plot(px, py, label="Person")
+    return df
 
-    # 起止点标记
-    plt.scatter([rx.iloc[0]],[ry.iloc[0]], marker="o", s=60, label="Robot Start")
-    plt.scatter([rx.iloc[-1]],[ry.iloc[-1]], marker="s", s=60, label="Robot End")
-    plt.scatter([px.iloc[0]],[py.iloc[0]], marker="o", s=60, label="Person Start")
-    plt.scatter([px.iloc[-1]],[py.iloc[-1]], marker="s", s=60, label="Person End")
+def plot_robot_traj(df):
+    if df.empty:
+        raise ValueError("DataFrame 为空，无法绘制。")
 
-    # ===== 在轨迹上加箭头 =====
-    if draw_orientation:
-        # Robot
-        for i in range(0, len(rx), step):
-            dx, dy = 0.3*np.cos(rt.iloc[i]), 0.3*np.sin(rt.iloc[i])
-            plt.arrow(rx.iloc[i], ry.iloc[i], dx, dy, 
-                      head_width=0.1, color="blue", alpha=0.6)
-        # Person
-        for i in range(0, len(px), step):
-            dx, dy = 0.3*np.cos(pt.iloc[i]), 0.3*np.sin(pt.iloc[i])
-            plt.arrow(px.iloc[i], py.iloc[i], dx, dy, 
-                      head_width=0.1, color="green", alpha=0.6)
+    plt.figure(figsize=(6, 6))
 
-    plt.gca().set_aspect("equal", adjustable="datalim")
-    plt.xlabel("X")
-    plt.ylabel("Y")
-    plt.title("XY Trajectory (Robot & Person)")
-    plt.legend(loc="best")
-    plt.tight_layout()
+    # 绘制轨迹线
+    plt.plot(df["x"], df["y"], marker="o", markersize=2, linewidth=1, label="robot trajectory")
 
-    # 保存到 data 文件夹下
-    out_path = DATA_DIR / "xy_trajectory_with_theta.png"
+    # 起点
+    plt.scatter(df["x"].iloc[0], df["y"].iloc[0], c="green", s=80, marker="o", label="Start")
+    plt.text(df["x"].iloc[0], df["y"].iloc[0], " Start", color="green", fontsize=10)
+
+    # 终点
+    plt.scatter(df["x"].iloc[-1], df["y"].iloc[-1], c="red", s=80, marker="X", label="End")
+    plt.text(df["x"].iloc[-1], df["y"].iloc[-1], " End", color="red", fontsize=10)
+
+    # 绘制机器人朝向箭头（稀疏取点避免太密）
+    step = max(len(df) // 20, 1)  # 控制箭头数量，默认取大约20个
+    plt.quiver(
+        df["x"][::step], df["y"][::step],
+        np.cos(df["theta"][::step]), np.sin(df["theta"][::step]),
+        angles="xy", scale_units="xy", scale=5, width=0.003, color="blue", alpha=0.6,
+        label="Direction"
+    )
+
+    plt.xlabel("X position")
+    plt.ylabel("Y position")
+    plt.title("Robot Trajectory")
+
+    # 图例放到右下角
+    plt.legend(loc="lower right")
+
+    plt.axis("equal")
+    plt.grid(True)
+
+    out_path = DATA_DIR / "robot_trajectory.png"
     plt.savefig(out_path, dpi=200)
-    plt.show()
-    print(f"✅ 带朝向的轨迹图已保存到: {out_path}")
+    print(f"已保存: {out_path}")
 
-if __name__ == "__main__":
-    # 默认开启画朝向，步长=20（即每20帧画一个箭头）
-    plot_xy(draw_orientation=True, step=20)
+    plt.show()
+
+
+if __name__ == "__main__":   
+    df = load_robot_traj()
+    print("轨迹数据前5行：")
+    print(df.head())
+    plot_robot_traj(df)
