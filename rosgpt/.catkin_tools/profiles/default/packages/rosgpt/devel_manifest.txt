@@ -1,4 +1,0 @@
-rosgpt
-/home/liu/liu_workplace/rosgpt/devel/.private/rosgpt/share/rosgpt/cmake/rosgptConfig.cmake /home/liu/liu_workplace/rosgpt/devel/share/rosgpt/cmake/rosgptConfig.cmake
-/home/liu/liu_workplace/rosgpt/devel/.private/rosgpt/share/rosgpt/cmake/rosgptConfig-version.cmake /home/liu/liu_workplace/rosgpt/devel/share/rosgpt/cmake/rosgptConfig-version.cmake
-/home/liu/liu_workplace/rosgpt/devel/.private/rosgpt/lib/pkgconfig/rosgpt.pc /home/liu/liu_workplace/rosgpt/devel/lib/pkgconfig/rosgpt.pc

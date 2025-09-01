@@ -1,6 +1,0 @@
-devel_space: /home/liu/liu_workplace/rosgpt/devel
-install: false
-install_space: /home/liu/liu_workplace/rosgpt/install
-profile: default
-source_space: /home/liu/liu_workplace/rosgpt/src
-workspace: /home/liu/liu_workplace/rosgpt

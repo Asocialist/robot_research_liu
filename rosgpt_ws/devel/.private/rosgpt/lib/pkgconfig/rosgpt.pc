@@ -1,0 +1,8 @@
+prefix=/home/liu/liu_workplace/rosgpt_ws/devel/.private/rosgpt
+
+Name: rosgpt
+Description: Description of rosgpt
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

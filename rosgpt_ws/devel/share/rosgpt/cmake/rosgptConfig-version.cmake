@@ -1,0 +1,1 @@
+/home/liu/liu_workplace/rosgpt_ws/devel/.private/rosgpt/share/rosgpt/cmake/rosgptConfig-version.cmake

@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /home/liu/liu_workplace/rosgpt_ws/devel/.private/rosgpt/setup.sh
