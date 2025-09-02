@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<package>
+  <name>hdk_objectpoint_finder</name>
+  <version>1.0.0</version>
+  <description>The hdk_objectpoint_finder package</description>
+  <maintainer email="kobayashilab@todo.todo">kobayashilab</maintainer>
+  <license>BSD</license>
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>roscpp</build_depend>
+  <build_depend>message_generation</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>gndlib</build_depend>
+  <build_depend>gnd_rosutil</build_depend>
+  <build_depend>gnd_msgs</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+
+
+  <run_depend>roscpp</run_depend>
+  <run_depend>message_runtime</run_depend>
+  <run_depend>std_msgs</run_depend>
+  <run_depend>geometry_msgs</run_depend>
+  <run_depend>gndlib</run_depend>
+  <run_depend>gnd_rosutil</run_depend>
+  <run_depend>gnd_msgs</run_depend>
+  <run_depend>sensor_msgs</run_depend>
+
+
+  <export>
+  </export>
+</package>
