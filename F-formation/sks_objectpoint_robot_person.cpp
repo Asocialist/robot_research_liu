@@ -269,16 +269,31 @@ int main(int argc, char **argv) {
                 // 最小距离/死区
                 double min_distance = 0.7;
                 const double DEAD_ZONE = 0.3;
-
                 if (std::abs(distance2 - min_distance) < DEAD_ZONE) {
-                    msg.linear_velocity = 0.0;              // 死区内停止
-                } else if (distance2 < min_distance) {
-                    msg.linear_velocity = -0.1;             // 太近后退
-                } else {
-                    msg.linear_velocity = std::min(distance2 - ((distance_opt / 2) + 0.15), 0.3);
-                }
+                msg.linear_velocity = 0.0;
+                // 新增：对齐人物朝向
+                double yaw_err = normalizeAngle(poseTrackingT - poseVehicleT);
+                msg.angle = yaw_err;
+            }
+            else if (distance2 < min_distance) {
+                msg.linear_velocity = -0.1;
+                msg.angle = Theta2;       // 仍指向目标中点方向
+            }
+            else {
+                msg.linear_velocity = std::min(distance2 - ((distance_opt / 2) + 0.15), 0.3);
+                msg.angle = Theta2;       // 仍指向目标中点方向
+            }
+            
 
-                msg.angle = Theta2;
+                // if (std::abs(distance2 - min_distance) < DEAD_ZONE) {
+                //     msg.linear_velocity = 0.0;              // 死区内停止
+                // } else if (distance2 < min_distance) {
+                //     msg.linear_velocity = -0.1;             // 太近后退
+                // } else {
+                //     msg.linear_velocity = std::min(distance2 - ((distance_opt / 2) + 0.15), 0.3);
+                // }
+
+                // // msg.angle = Theta2;
                 msg.formation_flag = true;
 
                 ROS_INFO_STREAM(GREEN << "Publishing formation mode: flag=TRUE"
