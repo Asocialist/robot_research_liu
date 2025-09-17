@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+rosgpt.py (extended)
+- Keep legacy chat behavior: /rosgptinput -> OpenAI -> /rosgptpublish
+- NEW: Make GPT pick exactly ONE waypoint label from a whitelist and publish:
+    * /gpt_next_wp (std_msgs/String)      : chosen label
+    * /gpt_goal_pose (geometry_msgs/PoseStamped) : pose resolved via label->id->coords
+    * /gpt_plan/waypoints (nav_msgs/Path) : RViz visualization (single point path)
+    * /gpt_plan/debug (std_msgs/String)   : raw JSON decision & reasoning
+
+Params:
+- ~wp_label_file: path to a JSON file containing waypoint mappings, e.g.:
+  {
+    "labels": { "ENTRANCE":"000", "AISLE_2":"001", "CASHIER":"003", "EXIT":"004" },
+    "coords": {
+      "000": {"x": -1.544608, "y": 0.103788},
+      "001": {"x": -1.532398, "y": 3.412791},
+      "003": {"x":  4.304146, "y": -0.299153},
+      "004": {"x":  0.500000, "y":  5.100000}
+    }
+  }
+
+Environment:
+- OPENAI_API_KEY must be set.
+
+Notes:
+- This node does NOT move the robot itself. Downstream nodes should subscribe to
+  /gpt_goal_pose (or /gpt_next_wp then map to coords) and send the goal to your
+  planner (icartmini_sbtp / move_base / Nav2).
+"""
+
+import os
+import json
+import traceback
+
+import rospy
+from std_msgs.msg import String
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
+
+# If you use the legacy OpenAI python sdk:
+try:
+    import openai
+    _USE_NEW_OPENAI_SDK = False
+except Exception:
+    # Allow running without the package to test ROS wiring
+    openai = None
+    _USE_NEW_OPENAI_SDK = False
+
+
+class ROSGPTNode(object):
+    def __init__(self):
+        # -------------------------
+        # ROS init & configuration
+        # -------------------------
+        rospy.init_node("rosgpt_node")
+
+        # Load OpenAI API key from env
+        self.api_key = os.getenv("OPENAI_API_KEY", "")
+        if not self.api_key:
+            rospy.logwarn("OPENAI_API_KEY not set. GPT features will be disabled.")
+        else:
+            if openai:
+                openai.api_key = self.api_key
+
+        # Load waypoint label file
+        default_label_file = rospy.get_param("~wp_label_file", "")
+        if not default_label_file:
+            rospy.logwarn("~wp_label_file param is empty. Label->coord mapping disabled.")
+        self.wp_map = self._load_wp_label_file(default_label_file) if default_label_file else None
+
+        # Precompute label lists for GPT whitelist
+        if self.wp_map and "labels" in self.wp_map and isinstance(self.wp_map["labels"], dict):
+            self.labels = sorted(list(self.wp_map["labels"].keys()))
+        else:
+            self.labels = []  # empty whitelist => GPT picking will be skipped
+
+        # -------------------------
+        # Publishers & Subscribers
+        # -------------------------
+        # Legacy chat output (keep existing behavior)
+        self.pub_reply = rospy.Publisher("/rosgptpublish", String, queue_size=10)
+
+        # NEW: GPT decision outputs
+        self.pub_next_wp   = rospy.Publisher("/gpt_next_wp", String, queue_size=1)
+        self.pub_goal_pose = rospy.Publisher("/gpt_goal_pose", PoseStamped, queue_size=1)
+        self.pub_path_vis  = rospy.Publisher("/gpt_plan/waypoints", Path, queue_size=1)
+        self.pub_dbg       = rospy.Publisher("/gpt_plan/debug", String, queue_size=10)
+
+        # Subscribe to user text input (legacy)
+        rospy.Subscriber("/rosgptinput", String, self.cb_user_text, queue_size=1)
+
+        # Chat memory (minimal)
+        self.chat_history = []
+
+        rospy.loginfo("rosgpt_node is up. Labels loaded: %d", len(self.labels))
+
+    # ------------------------------------------------------------------
+    # ROS Callbacks
+    # ------------------------------------------------------------------
+    def cb_user_text(self, msg: String):
+        """Entry point: receive user text, 1) produce chat reply, 2) pick next waypoint."""
+        user_msg = (msg.data or "").strip()
+        if not user_msg:
+            rospy.logwarn("Empty /rosgptinput received.")
+            return
+
+        # 1) Legacy chat pipeline
+        reply = self._chat_reply(user_msg)
+        if reply:
+            self.pub_reply.publish(reply)
+
+        # 2) Waypoint picking (strict JSON & whitelist)
+        picked = self._pick_next_waypoint_label(user_msg)
+        if picked:
+            # Publish label for downstream queue/planner
+            self.pub_next_wp.publish(picked)
+            # Also publish a PoseStamped and a one-point Path for visualization
+            self._publish_pose_and_path_for_label(picked)
+
+    # ------------------------------------------------------------------
+    # GPT: Chat reply (legacy behavior, safe fallback if API missing)
+    # ------------------------------------------------------------------
+    def _chat_reply(self, user_msg: str) -> str:
+        """Return a short friendly reply; do not block execution if API missing."""
+        # Append to minimal history
+        self.chat_history.append({"role": "user", "content": user_msg})
+
+        if not openai or not self.api_key:
+            # Fallback when OpenAI is not available
+            return "（本地模式）已收到指令：{}".format(user_msg)
+
+        try:
+            # Keep it simple: deterministic, short
+            resp = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "system", "content": "You are a concise assistant."}] + self.chat_history[-4:],
+                temperature=0.2,
+                max_tokens=128,
+            )
+            text = resp.choices[0].message["content"].strip()
+            # Keep chat history short
+            self.chat_history.append({"role": "assistant", "content": text})
+            self.chat_history = self.chat_history[-8:]
+            return text
+        except Exception as e:
+            rospy.logwarn("OpenAI chat failed: %s", str(e))
+            return "（本地模式）指令已接收：{}".format(user_msg)
+
+    # ------------------------------------------------------------------
+    # GPT: Pick next waypoint label (STRICT JSON)
+    # ------------------------------------------------------------------
+    def _pick_next_waypoint_label(self, user_msg: str) -> str:
+        """
+        Ask GPT to select EXACTLY ONE label from whitelist.
+        If API or whitelist unavailable, fallback to first label (deterministic).
+        """
+        if not self.labels:
+            rospy.logwarn("No labels loaded. Skipping GPT waypoint picking.")
+            return ""
+
+        if not openai or not self.api_key:
+            # Deterministic fallback
+            fallback = self.labels[0]
+            self.pub_dbg.publish(json.dumps({"next_wp": fallback, "reason": "fallback:no_api"}, ensure_ascii=False))
+            return fallback
+
+        try:
+            sys_prompt = (
+                "You are a navigation intent compiler. "
+                "Output STRICT JSON only, no prose. "
+                "Schema: {\"next_wp\":\"<ONE_FROM_LIST>\", \"reason\":\"string\"}. "
+                "Constraints: pick exactly one from the whitelist; if unclear, prefer an aisle over cashier/exit."
+            )
+            messages = [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": json.dumps(
+                    {"cmd": user_msg, "choices": self.labels}, ensure_ascii=False)}
+            ]
+            resp = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                temperature=0.1,
+                max_tokens=64,
+            )
+            content = resp.choices[0].message["content"]
+            d = json.loads(content)  # enforce strict JSON
+            wp = d.get("next_wp", "")
+            if wp not in self.labels:
+                raise ValueError("GPT returned invalid label: {}".format(wp))
+            # Debug: keep model's reason for auditing
+            self.pub_dbg.publish(json.dumps(d, ensure_ascii=False))
+            return wp
+        except Exception as e:
+            rospy.logwarn("OpenAI label picking failed: %s", str(e))
+            rospy.logdebug(traceback.format_exc())
+            # Deterministic fallback
+            fallback = self.labels[0]
+            self.pub_dbg.publish(json.dumps({"next_wp": fallback, "reason": "fallback:error"}, ensure_ascii=False))
+            return fallback
+
+    # ------------------------------------------------------------------
+    # Visualization & Pose publishing
+    # ------------------------------------------------------------------
+    def _publish_pose_and_path_for_label(self, label: str):
+        """Resolve label -> id -> coords, then publish PoseStamped and a one-point Path."""
+        if not self.wp_map or "labels" not in self.wp_map or "coords" not in self.wp_map:
+            rospy.logwarn("Waypoint map not loaded; cannot publish pose/path for label=%s", label)
+            return
+
+        label_to_id = self.wp_map["labels"]
+        id_to_xy    = self.wp_map["coords"]
+
+        if label not in label_to_id:
+            rospy.logwarn("Unknown label: %s", label)
+            return
+
+        wid = label_to_id[label]
+        if wid not in id_to_xy:
+            rospy.logwarn("No coords for waypoint id: %s (label=%s)", wid, label)
+            return
+
+        xy = id_to_xy[wid]
+        x = float(xy.get("x", 0.0))
+        y = float(xy.get("y", 0.0))
+
+        # PoseStamped for downstream (bridge to planner)
+        ps = PoseStamped()
+        ps.header.frame_id = "map"
+        ps.header.stamp = rospy.Time.now()
+        ps.pose.position.x = x
+        ps.pose.position.y = y
+        ps.pose.orientation.w = 1.0  # yaw optional; keep 0 for simplicity
+        self.pub_goal_pose.publish(ps)
+
+        # One-point Path for RViz (quick sanity check)
+        path = Path()
+        path.header.frame_id = "map"
+        path.header.stamp = rospy.Time.now()
+        path.poses = [ps]
+        self.pub_path_vis.publish(path)
+
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
+    def _load_wp_label_file(self, path: str):
+        """Load JSON mapping for labels and coords. Return dict or None."""
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            # Minimal validation
+            if not isinstance(data, dict) or "labels" not in data or "coords" not in data:
+                rospy.logwarn("Invalid wp_label_file format (missing 'labels'/'coords').")
+            return data
+        except Exception as e:
+            rospy.logwarn("Failed to load wp_label_file '%s': %s", path, str(e))
+            return None
+
+
+if __name__ == "__main__":
+    node = ROSGPTNode()
+    rospy.loginfo("rosgpt_node (extended) running. Waiting for /rosgptinput ...")
+    rospy.spin()
