@@ -1,0 +1,5 @@
+
+# ignore local nested repos
+tmp/catkin_ws_liu_bac/icartmini_sbtp/
+tmp/catkin_ws_liu_bac/nkm_destination_queue/
+tmp/sks_fformation_move/

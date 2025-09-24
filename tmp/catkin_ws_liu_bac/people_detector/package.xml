@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>people_detector</name>
+  <version>0.0.1</version>
+  <description>LiDAR-based people detection via scan-line adjacency clustering</description>
+
+  <maintainer email="liu.r.020@ms.saitama-u.ac.jp">liurunzhi</maintainer>
+  <license>BSD</license>
+
+  <!-- Build system -->
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- Run-time + Build-time dependencies (format=2: use <depend/>) -->
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+
+  <!-- Export tags can stay empty for now -->
+  <export/>
+</package>
