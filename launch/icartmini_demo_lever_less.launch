@@ -1,0 +1,52 @@
+<launch>
+	<!-- icartmini param path -->
+	<arg name="robot" default="/home/liu/liu_workplace/ros/icartmini"/>
+
+	<!-- location map path -->
+	<arg name="locations" default="/home/liu/liu_workplace/ros/locations"/>
+
+
+
+<!--<arg name="location" default="shino_5f"/>-->
+
+<!-- <arg name="location" default="bldg_RandP_5F"/> -->
+
+
+<!--<arg name="location" default="250902"/>-->
+<arg name="location" default="250725"/>
+
+	<node pkg="gnd_synctimer" name="gnd_synctimer" type="gnd_synctimer" args="$(arg robot)/synctimer.conf"/>
+	<node pkg="icartmini_proxy" name="gnd_proxy" type="icartmini_proxy" args="$(arg robot)/icartmini_proxy.conf"/>
+
+	<node pkg="urg_node" name="urg_node" type="urg_node">
+		<param name="ip_address" value="192.168.0.12"/>
+		<param name="serial_port" value="/dev/ttyACM0"/>
+		<param name="frame_id" value="laser"/>
+		<param name="calibrate_time" value="true"/>
+		<param name="publish_intensity" value="true"/>
+		<param name="publish_multiecho" value="false"/>
+		<param name="angle_min" value="-1.5707963"/>
+		<param name="angle_max" value="1.5707963"/>
+	</node>
+
+	<node pkg="gnd_ls_coordtf" name="gnd_ls_coordtf" type="gnd_ls_coordtf" args="$(arg robot)/ls_coordtf.conf"/>
+	<node pkg="gnd_particle_localizer" name="gnd_particle_localizer" type="gnd_particle_localizer" args="$(arg locations)/$(arg location)/particle_localizer.conf"/>
+	<node pkg="gnd_lssmap_particle_evaluator" name="gnd_lssmap_particle_evaluator" type="gnd_lssmap_particle_evaluator" args="$(arg locations)/$(arg location)/lssmap_particle_evaluator.conf"/>
+	<node pkg="gnd_visualizer" name="gnd_visualizer" type="gnd_visualizer" args="$(arg locations)/$(arg location)/visualizer.conf"/>
+	<node pkg="sy_cart_lever_proxy" name="sy_cart_lever_proxy" type="sy_cart_lever_proxy" args="$(arg robot)/cart_lever_proxy.conf"/>
+	<node pkg="sy_path_setter" name="sy_path_setter" type="sy_path_setter_marker" args="$(arg locations)/$(arg location)/$(arg location).path $(arg locations)/$(arg location)/image/waypointImage"/>
+	<node pkg="joy" name="joy_node" type="joy_node">
+		<param name="device" value="/dev/input/js0"/>
+	</node>
+	<node pkg="szr_remotejoy_manager" name="szr_remotejoy_manager" type="szr_remotejoy_manager" args="$(arg robot)/remotejoy_manager_leverless.conf"/>
+	<node pkg="sy_manual_release" name="sy_manual_release" type="sy_manual_release"/>
+	<node pkg="sy_traffic_indicator" name="sy_projecter" type="sy_projecter" args="$(arg locations)/$(arg location)/navigation_point.csv"/>
+	<node pkg="hdk_pose_resetter" name="hdk_pose_resetter" type="hdk_pose_resetter" args="$(arg locations)/$(arg location)/hdk_pose_resetter_L.conf"/>
+	<node pkg="hdk_pose_evaluator" name="hdk_pose_evaluator" type="hdk_pose_evaluator" args="$(arg locations)/$(arg location)/hdk_pose_evaluator.conf"/>
+	<node pkg="hdk_waypoint_finder" name="hdk_waypoint_finder" type="hdk_waypoint_finder" args="$(arg locations)/$(arg location)/hdk_waypoint_finder.conf"/>
+	<node pkg="sy_rollsign" name="sy_rollsign" type="sy_rollsign" args="$(arg locations)/$(arg location)/sy_rollsign.conf"/>
+	<node pkg="sy_mode_changer" name="sy_mode_changer" type="sy_mode_changer" args="$(arg robot)/mode_changer.conf"/>
+	<!-- node pkg="icartmini_sbtp" name="icartmini_sbtp" type="icartmini_sbtp" args="$(arg locations)/$(arg location)/navigation_sbtp_icartmini01.conf"/ -->
+
+
+</launch>

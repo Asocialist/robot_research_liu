@@ -1,0 +1,381 @@
+#include <vector>
+#include <stdio.h>
+#include <string.h>
+#include <cmath>
+#include <opencv2/opencv.hpp>
+#include <deque>
+
+#include "EllipseTracker2LS.h"
+#include "ros/ros.h"
+#include "json11.hpp"
+#include "sensor_msgs/LaserScan.h"
+#include "geometry_msgs/Pose2D.h"
+
+// 全局变量用于鼠标回调
+bool lbPressed = false;
+int lbX = 0;
+int lbY = 0;
+
+void mouseCallback(int event, int x, int y, int, void*)
+{
+	if (event == cv::EVENT_LBUTTONDOWN)
+	{
+		lbPressed = true;
+		lbX = x;
+		lbY = y;
+	}
+}
+
+
+float Scale = 0.075f;
+cv::Size windowSize;
+float ThresL = 4000;
+float ThresM = 1000;
+float ThresS = 200;
+
+class ScanMessageHandler
+{
+public:
+	static constexpr double SCAN_DISTANCE_MAGNIFICATION = 1000.0;
+	static double RetroreflectiveIntensity;
+public: 
+	std::string topicName;
+	double offsetX = 0;
+	double offsetY = 0;
+	double offsetT = 0;
+public: 
+	std::vector<int> urgDistance;
+	std::vector<int> urgIntensity;
+	std::vector<cv::Point2d> drawPosition;
+
+private:
+	int dataSize = 0;
+	double angle_min_rad = 0.0;
+	double angle_increment_rad = 0.0;
+
+public:
+	void TopicCallbackFunction(const sensor_msgs::LaserScan::ConstPtr &msg){
+		if(dataSize != msg->ranges.size()){
+			urgDistance.resize(msg->ranges.size());
+			urgIntensity.resize(msg->ranges.size());
+			drawPosition.resize(msg->ranges.size());
+			dataSize = msg->ranges.size();
+			angle_min_rad = msg->angle_min;
+			angle_increment_rad = msg->angle_increment;
+		}
+		
+		for (int i = 0; i < dataSize; i++)
+		{
+			urgDistance[i] = msg->ranges[i] * SCAN_DISTANCE_MAGNIFICATION;
+			urgIntensity[i] = msg->intensities[i];
+		}
+		IntensityNormalization();
+		CalcDrawPosition();
+		return;
+	}
+
+	void SetOffset(double x_mm, double y_mm, double th_rad){
+		offsetX = x_mm;
+		offsetY = y_mm;
+		offsetT = th_rad;
+		dataSize = 0;
+	}
+
+protected:
+	void IntensityNormalization()
+	{
+		for (int i = 0; i < dataSize; i++)
+		{
+            double normalized_intensity = (double)urgIntensity[i] * pow((double)urgDistance[i], 0.5);
+			urgIntensity[i] = std::round(normalized_intensity / RetroreflectiveIntensity * 255.0);
+			if (urgIntensity[i] > 255) urgIntensity[i] = 255;
+			if (urgIntensity[i] < 0) urgIntensity[i] = 0;
+		}
+	}
+
+	void CalcDrawPosition()
+	{
+		if (dataSize == 0) return;
+
+		double cos_t = cos(offsetT);
+		double sin_t = sin(offsetT);
+		
+		double displayCenterX = windowSize.width * 0.5;
+    	double displayCenterY = windowSize.height * 0.5;
+
+		for (int i = 0; i < dataSize; i++)
+		{
+			double local_angle = angle_min_rad + i * angle_increment_rad;
+			double dist = (double)urgDistance[i];
+			double local_x = dist * cos(local_angle);
+			double local_y = dist * sin(local_angle);
+			double world_x = offsetX + local_x * cos_t - local_y * sin_t;
+			double world_y = offsetY + local_x * sin_t + local_y * cos_t;
+			drawPosition[i].x = std::round(world_y * Scale + displayCenterX);
+			drawPosition[i].y = std::round(-world_x * Scale + displayCenterY);
+		}
+	}
+};
+double ScanMessageHandler::RetroreflectiveIntensity;
+
+int main(int argc, char **argv)
+{
+	// --- Default Parameters ---
+	std::string NodeName = "person_following_multi_OR";
+	std::string TopicNameTrackingPosition = "pose_person_following";
+	double OutputTopicOffsetPoseX = 0;
+	double OutputTopicOffsetPoseY = 0;
+	double OutputTopicOffsetPoseT = 0;
+
+	double StartTrackingIntensityMin = 90;
+	double StartTrackingDistanceMax  = 4000;
+	double StopTrackingIntensity 	= 15;
+	ScanMessageHandler::RetroreflectiveIntensity  = 300000;
+
+	windowSize = cv::Size(640, 640);
+	std::vector<ScanMessageHandler> handlerList;
+	int OffsetX_img[2] = {0,0};
+	int OffsetY_img[2] = {0,0};
+	double OffsetT_rad[2] = {0,0};
+
+	// --- Load Configuration from JSON ---
+	if (argc < 2) {
+        std::cerr << "Error: No JSON configuration file provided. Usage: <executable> config.json" << std::endl;
+        return 1;
+    }
+	
+	auto configure = json11::LoadJsonFile(argv[1]); 
+	if (configure.is_null()) {
+		std::cerr << "Failed to load or parse JSON file: " << argv[1] << std::endl;
+		return 1;
+	} 
+	
+	std::cout << "Successfully loaded configuration from " << argv[1] << std::endl;
+	NodeName = configure["NodeName"].is_null() ? NodeName : configure["NodeName"].string_value();
+	StartTrackingIntensityMin = configure["StartTrackingIntensityMin"].is_null() ? StartTrackingIntensityMin : configure["StartTrackingIntensityMin"].number_value();
+	StartTrackingDistanceMax = configure["StartTrackingDistanceMax"].is_null() ? StartTrackingDistanceMax : configure["StartTrackingDistanceMax"].number_value();
+	StopTrackingIntensity = configure["StopTrackingIntensity"].is_null() ? StopTrackingIntensity : configure["StopTrackingIntensity"].number_value();
+	TopicNameTrackingPosition = configure["TopicNamePublishPosition"].is_null() ? TopicNameTrackingPosition : configure["TopicNamePublishPosition"].string_value();
+	ScanMessageHandler::RetroreflectiveIntensity = configure["RetroreflectiveIntensity"].is_null() ? ScanMessageHandler::RetroreflectiveIntensity : configure["RetroreflectiveIntensity"].number_value();
+		
+	windowSize.width = configure["ImageSize"]["x"].is_null() ? windowSize.width : configure["ImageSize"]["x"].int_value();
+	windowSize.height = configure["ImageSize"]["y"].is_null() ? windowSize.height : configure["ImageSize"]["y"].int_value();
+		
+	OutputTopicOffsetPoseX = configure["OutputOffset"]["x"].is_null() ? OutputTopicOffsetPoseX : configure["OutputOffset"]["x"].number_value();
+	OutputTopicOffsetPoseY = configure["OutputOffset"]["y"].is_null() ? OutputTopicOffsetPoseY : configure["OutputOffset"]["y"].number_value();
+	OutputTopicOffsetPoseT = configure["OutputOffset"]["theta"].is_null() ? OutputTopicOffsetPoseT : configure["OutputOffset"]["theta"].number_value();
+
+	ThresS = configure["ThresholdDistance"]["short"].is_null() ? ThresS : configure["ThresholdDistance"]["short"].number_value();
+	ThresM = configure["ThresholdDistance"]["medium"].is_null() ? ThresM : configure["ThresholdDistance"]["medium"].number_value();
+	ThresL = configure["ThresholdDistance"]["long"].is_null() ? ThresL : configure["ThresholdDistance"]["long"].number_value();
+
+	if(configure["ScanList"].is_array()){
+		auto slist = configure["ScanList"].array_items();
+		if(!slist.empty()){
+			handlerList.clear();
+			int i = 0;
+			for(const auto &itr : slist){
+				if(i >= 2) continue;
+				
+				double ox_phys = itr["Offset"]["x"].number_value();
+				double oy_phys = itr["Offset"]["y"].number_value();
+				double ot_phys = itr["Offset"]["theta"].number_value();
+
+				OffsetX_img[i] = windowSize.width/2  + oy_phys * Scale;
+				OffsetY_img[i] = windowSize.height/2 - ox_phys * Scale;
+				OffsetT_rad[i] = ot_phys;
+
+				handlerList.push_back(ScanMessageHandler());
+				handlerList.back().SetOffset(ox_phys, oy_phys, ot_phys);
+				handlerList.back().topicName = itr["TopicName"].string_value();
+				i++;
+			}
+		}
+	}
+
+	const int OffsetX_world_origin = windowSize.width  * 0.5;
+	const int OffsetY_world_origin = windowSize.height * 0.5;
+	
+	std::vector<cv::Mat> sensorVisibleRange(handlerList.size());
+	for(size_t i=0; i < handlerList.size(); ++i){
+        sensorVisibleRange[i] = cv::Mat::zeros(windowSize, CV_8UC1);
+		double oft = OffsetT_rad[i] + M_PI * 0.5;
+		cv::Vec2d ofv(cos(oft), sin(oft));
+		double costh = cos(0.4 * M_PI);
+		for(int r=0; r < sensorVisibleRange[i].rows; ++r){
+            for(int c=0; c < sensorVisibleRange[i].cols; ++c){
+                cv::Vec2d pv(c - OffsetX_img[i], r - OffsetY_img[i]);
+                if(cv::norm(pv) < 1e-6) continue;
+                double co = pv.dot(ofv) / cv::norm(pv);
+                sensorVisibleRange[i].at<uint8_t>(r,c) = (co > costh) ? 255 : 0;
+            }
+        }
+	}
+	if(sensorVisibleRange.size() == 2){
+		cv::Mat inverted_mask;
+		cv::bitwise_not(sensorVisibleRange[1], inverted_mask);
+		cv::bitwise_and(sensorVisibleRange[0], inverted_mask, sensorVisibleRange[0]);
+	}
+
+	ros::init(argc, argv, NodeName.c_str());
+	ros::NodeHandle nodeHandle;
+	std::vector<ros::Subscriber> subscLaserScan;
+	for(size_t i = 0; i < handlerList.size(); i++){
+		subscLaserScan.push_back(nodeHandle.subscribe(handlerList[i].topicName.c_str(), 100, &ScanMessageHandler::TopicCallbackFunction, &handlerList[i]));
+	}
+	ros::Publisher pubPosePersonFollowing = nodeHandle.advertise<geometry_msgs::Pose2D>(TopicNameTrackingPosition.c_str(), 100);
+	geometry_msgs::Pose2D msgPosePersonFollowing;
+
+	cv::Mat baseImage(windowSize, CV_8UC3, cv::Scalar(0,0,0));
+	cv::circle(baseImage, cv::Point(OffsetX_world_origin, OffsetY_world_origin), 4, cv::Scalar(64, 64, 64), -1);
+	cv::circle(baseImage, cv::Point(OffsetX_world_origin, OffsetY_world_origin), std::round(ThresS * Scale), cv::Scalar(64, 64, 64), 1);
+	cv::circle(baseImage, cv::Point(OffsetX_world_origin, OffsetY_world_origin), std::round(ThresM * Scale), cv::Scalar(32, 32, 32), 1);
+	cv::circle(baseImage, cv::Point(OffsetX_world_origin, OffsetY_world_origin), std::round(ThresL * Scale), cv::Scalar(64, 64, 64), 1);
+
+	cv::namedWindow("Display Image", cv::WINDOW_AUTOSIZE);
+    cv::namedWindow("Intensity Image", cv::WINDOW_AUTOSIZE);
+	cv::setMouseCallback("Display Image", mouseCallback);
+    
+	std::vector<cv::Vec2d> lidarPos_img;
+    for(size_t i = 0; i < handlerList.size(); ++i){
+        lidarPos_img.push_back({(double)OffsetX_img[i], (double)OffsetY_img[i]});
+    }
+	EllipseTracker2LSPool trackers(1, 300, 18, 11, lidarPos_img, sensorVisibleRange);
+    
+	bool isTracked = false;
+    double aveIntensity = 0;
+	double lastKnownAngle = 0.0;
+
+	ros::Rate loop_rate(60);
+	while (ros::ok())
+	{
+		cv::Mat dispImage, distanceImage, intensityImage;
+		baseImage.copyTo(dispImage);
+		distanceImage.create(windowSize, CV_8UC3);
+        distanceImage.setTo(cv::Scalar(0));
+		intensityImage.create(windowSize, CV_8UC1);
+		intensityImage.setTo(cv::Scalar(0));
+		
+		for(const auto &itr : handlerList){
+			for (size_t i = 0; i < itr.drawPosition.size(); i++)
+			{
+				if (itr.urgDistance[i] > ThresS && itr.urgDistance[i] < ThresL) {
+					int color1 = itr.urgIntensity[i] * 4 + 64;
+                	if(color1 > 255) color1 = 255;
+					cv::circle(distanceImage, itr.drawPosition[i], 1, cv::Scalar(255, 255, 0), -1);
+					cv::circle(intensityImage, itr.drawPosition[i], 1, cv::Scalar(itr.urgIntensity[i]), -1);
+					cv::circle(dispImage, itr.drawPosition[i], 1, cv::Scalar(color1, color1, 64), -1);
+				}
+			}
+		}
+
+		cv::imshow("Intensity Image", intensityImage);
+		
+		cv::Mat distImage, distImageNot, transImage;
+		cv::cvtColor(distanceImage, distImage, cv::COLOR_BGR2GRAY);
+		cv::threshold(distImage, distImageNot, 64.0, 255.0, cv::THRESH_BINARY_INV);
+		cv::distanceTransform(distImageNot, transImage, cv::DIST_L2, 3);
+
+        
+		cv::normalize(transImage, transImage, 0, 255.0, cv::NORM_MINMAX);
+
+        if(!trackers.empty()) {
+		    trackers.next(transImage);
+        }
+
+		int usrU = -100, usrV = -100;
+		double usrAngl = 0;
+		
+		isTracked = !trackers.empty();
+
+		if(isTracked){
+			auto _p = trackers[0]->getPos();
+			usrU = _p[0]; usrV = _p[1]; usrAngl = _p[2];
+			lastKnownAngle = usrAngl;
+
+			cv::Rect roi = cv::Rect(usrU - 30, usrV - 30, 60, 60) & cv::Rect(0, 0, intensityImage.cols, intensityImage.rows);
+			if(roi.area() > 0) {
+			    cv::Mat intensityImageROI(intensityImage, roi);
+			    aveIntensity = cv::countNonZero(intensityImageROI) > 0 ? cv::sum(intensityImageROI)[0] / cv::countNonZero(intensityImageROI) : 0.0;
+			} else {
+				aveIntensity = 0.0;
+			}
+			if (aveIntensity < StopTrackingIntensity) {
+				trackers.removeByOrder(0);
+				isTracked = false;
+			}
+		}
+		
+		if (!isTracked)
+		{ 
+			for(const auto &itr : handlerList){
+				for (size_t i = 0; i < itr.drawPosition.size(); i++)
+				{
+					if (itr.urgDistance[i] > ThresS && itr.urgDistance[i] < StartTrackingDistanceMax && itr.urgIntensity[i] > StartTrackingIntensityMin)
+					{
+						usrU = std::round(itr.drawPosition[i].x);
+						usrV = std::round(itr.drawPosition[i].y);
+						trackers.add(usrU, usrV, lastKnownAngle);
+						isTracked = true;
+						break;
+					}
+				}
+				if(isTracked) break;
+			}
+		}
+
+		if (lbPressed)
+		{
+			lbPressed = false;
+			if(trackers.empty()) trackers.add(lbX, lbY, 0);
+			else trackers[0]->init(lbX, lbY, 0);
+            isTracked = true;
+		}
+
+		if (isTracked)
+		{
+    		auto _p = trackers[0]->getPos();
+    		usrU = _p[0]; usrV = _p[1]; usrAngl = _p[2];
+
+    		cv::ellipse(dispImage, cv::Point(usrU, usrV), cv::Size(18,11), usrAngl, 0, 360, cv::Scalar(255,255,255), 2);
+			cv::Rect targetRect(usrU - 30, usrV - 30, 60, 60);
+			cv::rectangle(dispImage, targetRect, cv::Scalar(255, 255, 255), 1);
+			
+			for(const auto &itr : handlerList){
+				for (const auto& pt : itr.drawPosition) {
+					if (targetRect.contains(pt)) {
+						cv::circle(dispImage, pt, 2, cv::Scalar(0,0,255), -1);
+					}
+				}
+			}
+
+			char mytext[12], angleText[20];
+			sprintf(mytext, "%4.0lf", aveIntensity);
+			cv::putText(dispImage, mytext, cv::Point(usrU + 30, usrV + 30), cv::FONT_HERSHEY_COMPLEX_SMALL, 0.7, cv::Scalar(255, 255, 255));
+			sprintf(angleText, "Ang: %d", (int)std::round(usrAngl));
+			cv::putText(dispImage, angleText, cv::Point(usrU + 30, usrV + 50), cv::FONT_HERSHEY_COMPLEX_SMALL, 0.7, cv::Scalar(255, 255, 255));
+			
+			double img_x = usrU - OffsetX_world_origin;
+    		double img_y = -(usrV - OffsetY_world_origin);
+			
+			double world_x_mm = img_x / Scale;
+			double world_y_mm = img_y / Scale;
+
+            // [关键修复] 使用 ScanMessageHandler:: 来访问静态成员变量
+			msgPosePersonFollowing.x = (OutputTopicOffsetPoseX + world_x_mm * cos(OutputTopicOffsetPoseT) - world_y_mm * sin(OutputTopicOffsetPoseT)) / ScanMessageHandler::SCAN_DISTANCE_MAGNIFICATION;
+			msgPosePersonFollowing.y = (OutputTopicOffsetPoseY + world_x_mm * sin(OutputTopicOffsetPoseT) + world_y_mm * cos(OutputTopicOffsetPoseT)) / ScanMessageHandler::SCAN_DISTANCE_MAGNIFICATION;
+			msgPosePersonFollowing.theta = OutputTopicOffsetPoseT - (usrAngl * M_PI / 180.0);
+			
+			pubPosePersonFollowing.publish(msgPosePersonFollowing);
+		}
+		
+		cv::imshow("Display Image", dispImage);
+		if (cv::waitKey(1) == 'q') break;
+
+		ros::spinOnce();
+		loop_rate.sleep();
+	}
+
+	cv::destroyAllWindows();
+	return 0;
+}
