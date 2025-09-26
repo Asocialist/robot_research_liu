@@ -26,7 +26,7 @@ void mouseCallback(int event, int x, int y, int, void*)
 	}
 }
 
-
+// 全局常量
 float Scale = 0.075f;
 cv::Size windowSize;
 float ThresL = 4000;
@@ -274,11 +274,8 @@ int main(int argc, char **argv)
 		cv::Mat distImage, distImageNot, transImage;
 		cv::cvtColor(distanceImage, distImage, cv::COLOR_BGR2GRAY);
 		cv::threshold(distImage, distImageNot, 64.0, 255.0, cv::THRESH_BINARY_INV);
-		cv::distanceTransform(distImageNot, transImage, cv::DIST_L2, 3);
-
+        cv::distanceTransform(distImageNot, transImage, cv::DIST_L2, 3);
         
-		cv::normalize(transImage, transImage, 0, 255.0, cv::NORM_MINMAX);
-
         if(!trackers.empty()) {
 		    trackers.next(transImage);
         }
