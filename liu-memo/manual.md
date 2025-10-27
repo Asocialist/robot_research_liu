@@ -73,3 +73,5 @@ rosbag play makemap.bag
 - $ rosrun nkm_follow_tracking nkm_follow_tracking ros/locations/ /nkm_follow_tracking.conf
 - $ rosrun hdk_objectpoint_finder find_objectpoint_by_orientation ros/locations/ /find_objectpoint_by_orientation.conf
 - $ rosrun sks_objectpoint_robot_person sks_objectpoint_robot_person ros/locations/ /sks_objectpoint_robot_person.conf
+
+gyrodometor.conf change offset value
