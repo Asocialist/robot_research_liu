@@ -1,0 +1,8 @@
+prefix=/home/liu/robot_research_liu/build/devel
+
+Name: node_review
+Description: Description of node_review
+Version: 0.1.0
+Cflags: -I/home/liu/robot_research_liu/build/devel/include
+Libs: -L${prefix}/lib 
+Requires: roscpp std_msgs message_runtime
