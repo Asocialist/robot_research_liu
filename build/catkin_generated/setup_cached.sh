@@ -9,7 +9,6 @@
 # modified environment variables
 export CMAKE_PREFIX_PATH="/home/liu/robot_research_liu/build/devel:$CMAKE_PREFIX_PATH"
 export LD_LIBRARY_PATH="/home/liu/robot_research_liu/build/devel/lib:$LD_LIBRARY_PATH"
-export PATH='/opt/ros/noetic/bin:/home/liu/.local/bin:/home/liu/anaconda3/bin:/home/liu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin'
 export PKG_CONFIG_PATH="/home/liu/robot_research_liu/build/devel/lib/pkgconfig:$PKG_CONFIG_PATH"
 export PWD='/home/liu/robot_research_liu/build'
 export PYTHONPATH="/home/liu/robot_research_liu/build/devel/lib/python3/dist-packages:$PYTHONPATH"
