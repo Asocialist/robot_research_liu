@@ -8,6 +8,9 @@
 
 # modified environment variables
 export CMAKE_PREFIX_PATH="/home/liu/robot_research_liu/build/devel:$CMAKE_PREFIX_PATH"
+export LD_LIBRARY_PATH="/home/liu/robot_research_liu/build/devel/lib:$LD_LIBRARY_PATH"
+export PKG_CONFIG_PATH="/home/liu/robot_research_liu/build/devel/lib/pkgconfig:$PKG_CONFIG_PATH"
 export PWD='/home/liu/robot_research_liu/build'
+export PYTHONPATH="/home/liu/robot_research_liu/build/devel/lib/python3/dist-packages:$PYTHONPATH"
 export ROSLISP_PACKAGE_DIRECTORIES="/home/liu/robot_research_liu/build/devel/share/common-lisp:$ROSLISP_PACKAGE_DIRECTORIES"
 export ROS_PACKAGE_PATH="/home/liu/robot_research_liu/node_review:$ROS_PACKAGE_PATH"

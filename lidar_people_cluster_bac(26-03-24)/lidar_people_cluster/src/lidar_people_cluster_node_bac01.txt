@@ -1,0 +1,655 @@
+#include <ros/ros.h>
+
+#include <sensor_msgs/LaserScan.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/point_cloud2_iterator.h>
+
+#include <geometry_msgs/PoseArray.h>
+#include <geometry_msgs/Pose.h>
+
+#include <visualization_msgs/MarkerArray.h>
+
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/buffer.h>
+#include <tf2/LinearMath/Transform.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+
+#include <message_filters/subscriber.h>
+#include <message_filters/synchronizer.h>
+#include <message_filters/sync_policies/approximate_time.h>
+
+#include <unordered_map>
+#include <vector>
+#include <queue>
+#include <cmath>
+#include <algorithm>
+#include <string>
+
+struct PointXYZ
+{
+  float x;
+  float y;
+  float z;
+};
+
+static inline bool isFiniteFloat(float v)
+{
+  return std::isfinite(v);
+}
+
+static inline double sqr(double v)
+{
+  return v * v;
+}
+
+static inline uint64_t packCellKey(int cx, int cy)
+{
+  // English comment:
+  // Pack two signed 32-bit integers into one 64-bit key.
+  return (static_cast<uint64_t>(static_cast<uint32_t>(cx)) << 32) |
+         (static_cast<uint64_t>(static_cast<uint32_t>(cy)));
+}
+
+static inline void hsvToRgb(float h, float s, float v, float &r, float &g, float &b)
+{
+  // English comment:
+  // h in [0,1), s in [0,1], v in [0,1]
+  float c = v * s;
+  float hp = h * 6.0f;
+  float x = c * (1.0f - std::fabs(std::fmod(hp, 2.0f) - 1.0f));
+  float m = v - c;
+
+  float rp = 0, gp = 0, bp = 0;
+  if (0.0f <= hp && hp < 1.0f) { rp = c; gp = x; bp = 0; }
+  else if (1.0f <= hp && hp < 2.0f) { rp = x; gp = c; bp = 0; }
+  else if (2.0f <= hp && hp < 3.0f) { rp = 0; gp = c; bp = x; }
+  else if (3.0f <= hp && hp < 4.0f) { rp = 0; gp = x; bp = c; }
+  else if (4.0f <= hp && hp < 5.0f) { rp = x; gp = 0; bp = c; }
+  else { rp = c; gp = 0; bp = x; }
+
+  r = rp + m;
+  g = gp + m;
+  b = bp + m;
+}
+
+class LidarPeopleClusterNode
+{
+public:
+  LidarPeopleClusterNode()
+  : nh_(),
+    pnh_("~"),
+    tf_buffer_(),
+    tf_listener_(tf_buffer_)
+  {
+    // Parameters
+    pnh_.param<std::string>("scan1_topic", scan1_topic_, "/scan1");
+    pnh_.param<std::string>("scan2_topic", scan2_topic_, "/scan2");
+    pnh_.param<std::string>("base_frame", base_frame_, "laser");
+
+    pnh_.param<double>("range_min", range_min_, 0.05);
+    pnh_.param<double>("range_max", range_max_, 12.0);
+
+    // Clustering params (shoulder-level human blob)
+    pnh_.param<double>("cluster_eps", cluster_eps_, 0.15);          // meters
+    pnh_.param<int>("cluster_min_pts", cluster_min_pts_, 8);
+    pnh_.param<int>("cluster_max_pts", cluster_max_pts_, 200);
+
+    pnh_.param<double>("cluster_min_width", cluster_min_width_, 0.20); // meters
+    pnh_.param<double>("cluster_max_width", cluster_max_width_, 0.90); // meters
+
+    pnh_.param<double>("candidate_min_dist", candidate_min_dist_, 0.3);
+    pnh_.param<double>("candidate_max_dist", candidate_max_dist_, 6.0);
+
+    // Tracking params
+    pnh_.param<double>("track_gate_dist", track_gate_dist_, 0.60);  // meters
+    pnh_.param<double>("track_timeout", track_timeout_, 0.8);       // seconds
+
+    // Visualization / debug
+    pnh_.param<bool>("publish_fused_cloud", publish_fused_cloud_, true);
+    pnh_.param<bool>("publish_cluster_points", publish_cluster_points_, false);
+
+    // Publishers
+    pub_candidates_ = nh_.advertise<geometry_msgs::PoseArray>("/people_candidates", 1);
+    pub_tracks_     = nh_.advertise<geometry_msgs::PoseArray>("/people_tracks", 1);
+    pub_markers_    = nh_.advertise<visualization_msgs::MarkerArray>("/people_markers", 1);
+    pub_cloud_      = nh_.advertise<sensor_msgs::PointCloud2>("/scan_fused_cloud", 1);
+
+    // Subscribers with approximate time sync
+    sub_scan1_.reset(new message_filters::Subscriber<sensor_msgs::LaserScan>(nh_, scan1_topic_, 5));
+    sub_scan2_.reset(new message_filters::Subscriber<sensor_msgs::LaserScan>(nh_, scan2_topic_, 5));
+
+    sync_.reset(new message_filters::Synchronizer<SyncPolicy>(SyncPolicy(10), *sub_scan1_, *sub_scan2_));
+    sync_->registerCallback(boost::bind(&LidarPeopleClusterNode::onScans, this, _1, _2));
+
+    ROS_INFO("lidar_people_cluster_node started. scan1=%s scan2=%s base_frame=%s",
+             scan1_topic_.c_str(), scan2_topic_.c_str(), base_frame_.c_str());
+  }
+
+private:
+  using SyncPolicy = message_filters::sync_policies::ApproximateTime<sensor_msgs::LaserScan, sensor_msgs::LaserScan>;
+
+  struct Detection
+  {
+    double x;
+    double y;
+    double z;
+    double width;
+    int pts;
+    std::vector<int> point_indices; // for optional cluster point marker
+  };
+
+  struct Track
+  {
+    int id;
+    double x;
+    double y;
+    double z;
+    ros::Time last_seen;
+  };
+
+  void onScans(const sensor_msgs::LaserScanConstPtr &s1,
+               const sensor_msgs::LaserScanConstPtr &s2)
+  {
+    std::vector<PointXYZ> points;
+    points.reserve(s1->ranges.size() + s2->ranges.size());
+
+    // Convert both scans into base_frame points
+    if (!appendScanPoints(*s1, points)) return;
+    if (!appendScanPoints(*s2, points)) return;
+
+    if (points.empty()) return;
+
+    // Cluster in 2D (x,y) using grid-accelerated region growing
+    std::vector<std::vector<int>> clusters;
+    buildClusters(points, clusters);
+
+    // Extract detections
+    std::vector<Detection> dets;
+    dets.reserve(clusters.size());
+    for (const auto &cidx : clusters)
+    {
+      Detection d;
+      if (!clusterToDetection(points, cidx, d)) continue;
+      dets.push_back(std::move(d));
+    }
+
+    // Publish candidates (no stable ID)
+    publishCandidates(s1->header.stamp, dets);
+
+    // Update tracks (stable ID)
+    updateTracks(s1->header.stamp, dets);
+
+    // Publish tracks + markers
+    publishTracksAndMarkers(s1->header.stamp, dets);
+
+    // Optional fused cloud for RViz debugging
+    if (publish_fused_cloud_)
+    {
+      publishFusedCloud(s1->header.stamp, points);
+    }
+  }
+
+  bool appendScanPoints(const sensor_msgs::LaserScan &scan, std::vector<PointXYZ> &out_points)
+  {
+    // Lookup transform scan_frame -> base_frame at scan time
+    geometry_msgs::TransformStamped tf_msg;
+    try
+    {
+      tf_msg = tf_buffer_.lookupTransform(base_frame_, scan.header.frame_id, scan.header.stamp, ros::Duration(0.1));
+    }
+    catch (const tf2::TransformException &ex)
+    {
+      ROS_WARN_THROTTLE(1.0, "TF lookup failed (%s -> %s): %s",
+                        scan.header.frame_id.c_str(), base_frame_.c_str(), ex.what());
+      return false;
+    }
+
+    tf2::Transform tf;
+    tf2::fromMsg(tf_msg.transform, tf);
+
+    const size_t n = scan.ranges.size();
+    double angle = scan.angle_min;
+
+    for (size_t i = 0; i < n; ++i, angle += scan.angle_increment)
+    {
+      const float r = scan.ranges[i];
+      if (!isFiniteFloat(r)) continue;
+      if (r < scan.range_min || r > scan.range_max) continue;
+      if (r < range_min_ || r > range_max_) continue;
+
+      // Point in scan frame
+      const float xs = r * std::cos(angle);
+      const float ys = r * std::sin(angle);
+
+      tf2::Vector3 p_scan(xs, ys, 0.0);
+      tf2::Vector3 p_base = tf * p_scan;
+
+      PointXYZ p;
+      p.x = static_cast<float>(p_base.x());
+      p.y = static_cast<float>(p_base.y());
+      p.z = static_cast<float>(p_base.z());
+      out_points.push_back(p);
+    }
+
+    return true;
+  }
+
+  void buildClusters(const std::vector<PointXYZ> &points, std::vector<std::vector<int>> &clusters)
+  {
+    const double eps = cluster_eps_;
+    const double eps2 = eps * eps;
+    const double inv = 1.0 / eps;
+
+    // Build grid map: cell -> point indices
+    std::unordered_map<uint64_t, std::vector<int>> cell_map;
+    cell_map.reserve(points.size() * 2);
+
+    std::vector<std::pair<int,int>> point_cells(points.size());
+
+    for (size_t i = 0; i < points.size(); ++i)
+    {
+      int cx = static_cast<int>(std::floor(points[i].x * inv));
+      int cy = static_cast<int>(std::floor(points[i].y * inv));
+      point_cells[i] = {cx, cy};
+      cell_map[packCellKey(cx, cy)].push_back(static_cast<int>(i));
+    }
+
+    std::vector<uint8_t> visited(points.size(), 0);
+
+    clusters.clear();
+    clusters.reserve(32);
+
+    // Region growing
+    for (size_t i = 0; i < points.size(); ++i)
+    {
+      if (visited[i]) continue;
+
+      // BFS queue
+      std::queue<int> q;
+      std::vector<int> cluster;
+      cluster.reserve(64);
+
+      visited[i] = 1;
+      q.push(static_cast<int>(i));
+
+      while (!q.empty())
+      {
+        int idx = q.front();
+        q.pop();
+        cluster.push_back(idx);
+
+        const int cx = point_cells[idx].first;
+        const int cy = point_cells[idx].second;
+
+        // Check neighbor cells (3x3)
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+          for (int dy = -1; dy <= 1; ++dy)
+          {
+            uint64_t key = packCellKey(cx + dx, cy + dy);
+            auto it = cell_map.find(key);
+            if (it == cell_map.end()) continue;
+
+            for (int j : it->second)
+            {
+              if (visited[j]) continue;
+
+              const double ddx = points[j].x - points[idx].x;
+              const double ddy = points[j].y - points[idx].y;
+              if (ddx*ddx + ddy*ddy <= eps2)
+              {
+                visited[j] = 1;
+                q.push(j);
+              }
+            }
+          }
+        }
+      }
+
+      // Min/max points filter early
+      if (static_cast<int>(cluster.size()) < cluster_min_pts_) continue;
+      if (static_cast<int>(cluster.size()) > cluster_max_pts_) continue;
+
+      clusters.push_back(std::move(cluster));
+    }
+  }
+
+  bool clusterToDetection(const std::vector<PointXYZ> &points,
+                          const std::vector<int> &cidx,
+                          Detection &out)
+  {
+    // Compute centroid and bounding box in XY
+    double sx = 0, sy = 0, sz = 0;
+    double minx = 1e9, miny = 1e9, maxx = -1e9, maxy = -1e9;
+
+    for (int idx : cidx)
+    {
+      const auto &p = points[idx];
+      sx += p.x;
+      sy += p.y;
+      sz += p.z;
+      minx = std::min(minx, (double)p.x);
+      miny = std::min(miny, (double)p.y);
+      maxx = std::max(maxx, (double)p.x);
+      maxy = std::max(maxy, (double)p.y);
+    }
+
+    const int n = static_cast<int>(cidx.size());
+    const double cx = sx / n;
+    const double cy = sy / n;
+    const double cz = sz / n;
+
+    const double dx = maxx - minx;
+    const double dy = maxy - miny;
+    const double width = std::hypot(dx, dy); // upper bound of cluster diameter
+
+    const double dist = std::hypot(cx, cy);
+
+    // Shoulder-level blob constraints (tunable)
+    if (dist < candidate_min_dist_ || dist > candidate_max_dist_) return false;
+    if (width < cluster_min_width_ || width > cluster_max_width_) return false;
+
+    out.x = cx;
+    out.y = cy;
+    out.z = cz;
+    out.width = width;
+    out.pts = n;
+    out.point_indices = cidx;
+    return true;
+  }
+
+  void publishCandidates(const ros::Time &stamp, const std::vector<Detection> &dets)
+  {
+    geometry_msgs::PoseArray pa;
+    pa.header.stamp = stamp;
+    pa.header.frame_id = base_frame_;
+
+    pa.poses.reserve(dets.size());
+    for (const auto &d : dets)
+    {
+      geometry_msgs::Pose p;
+      p.position.x = d.x;
+      p.position.y = d.y;
+      p.position.z = d.z;
+      p.orientation.w = 1.0; // identity
+      pa.poses.push_back(p);
+    }
+
+    pub_candidates_.publish(pa);
+  }
+
+  void updateTracks(const ros::Time &stamp, const std::vector<Detection> &dets)
+  {
+    // Remove stale tracks
+    tracks_.erase(
+      std::remove_if(tracks_.begin(), tracks_.end(),
+                     [&](const Track &t)
+                     {
+                       return (stamp - t.last_seen).toSec() > track_timeout_;
+                     }),
+      tracks_.end());
+
+    // Greedy association by nearest distance
+    const int T = static_cast<int>(tracks_.size());
+    const int D = static_cast<int>(dets.size());
+
+    std::vector<int> track_used(T, 0);
+    std::vector<int> det_used(D, 0);
+
+    struct Pair { double dist; int ti; int di; };
+    std::vector<Pair> pairs;
+    pairs.reserve(T * D);
+
+    for (int ti = 0; ti < T; ++ti)
+    {
+      for (int di = 0; di < D; ++di)
+      {
+        double dx = dets[di].x - tracks_[ti].x;
+        double dy = dets[di].y - tracks_[ti].y;
+        double dist = std::hypot(dx, dy);
+        pairs.push_back({dist, ti, di});
+      }
+    }
+
+    std::sort(pairs.begin(), pairs.end(), [](const Pair &a, const Pair &b){ return a.dist < b.dist; });
+
+    for (const auto &p : pairs)
+    {
+      if (p.dist > track_gate_dist_) break;
+      if (track_used[p.ti] || det_used[p.di]) continue;
+
+      // Assign detection to track
+      tracks_[p.ti].x = dets[p.di].x;
+      tracks_[p.ti].y = dets[p.di].y;
+      tracks_[p.ti].z = dets[p.di].z;
+      tracks_[p.ti].last_seen = stamp;
+
+      track_used[p.ti] = 1;
+      det_used[p.di] = 1;
+      det_to_track_[p.di] = tracks_[p.ti].id;
+    }
+
+    // Create new tracks for unmatched detections
+    for (int di = 0; di < D; ++di)
+    {
+      if (det_used[di]) continue;
+
+      Track nt;
+      nt.id = next_track_id_++;
+      nt.x = dets[di].x;
+      nt.y = dets[di].y;
+      nt.z = dets[di].z;
+      nt.last_seen = stamp;
+
+      tracks_.push_back(nt);
+      det_to_track_[di] = nt.id;
+    }
+  }
+
+  void publishTracksAndMarkers(const ros::Time &stamp, const std::vector<Detection> &dets)
+  {
+    // Publish tracks PoseArray (stable IDs implied by markers text)
+    geometry_msgs::PoseArray pa;
+    pa.header.stamp = stamp;
+    pa.header.frame_id = base_frame_;
+    pa.poses.reserve(tracks_.size());
+
+    for (const auto &t : tracks_)
+    {
+      geometry_msgs::Pose p;
+      p.position.x = t.x;
+      p.position.y = t.y;
+      p.position.z = t.z;
+      p.orientation.w = 1.0;
+      pa.poses.push_back(p);
+    }
+    pub_tracks_.publish(pa);
+
+    // Markers
+    visualization_msgs::MarkerArray ma;
+
+    // Clear old markers (RViz-friendly): publish DELETEALL once in a while
+    visualization_msgs::Marker del;
+    del.header.stamp = stamp;
+    del.header.frame_id = base_frame_;
+    del.ns = "people";
+    del.id = 0;
+    del.action = visualization_msgs::Marker::DELETEALL;
+    ma.markers.push_back(del);
+
+    // Create markers per track
+    for (const auto &t : tracks_)
+    {
+      float r,g,b;
+      // English comment:
+      // Golden ratio based hue for distinct colors.
+      float hue = std::fmod((t.id * 0.61803398875f), 1.0f);
+      hsvToRgb(hue, 0.85f, 0.95f, r, g, b);
+
+      // Sphere marker
+      visualization_msgs::Marker m;
+      m.header.stamp = stamp;
+      m.header.frame_id = base_frame_;
+      m.ns = "people";
+      m.id = t.id * 10 + 0;
+      m.type = visualization_msgs::Marker::SPHERE;
+      m.action = visualization_msgs::Marker::ADD;
+      m.pose.position.x = t.x;
+      m.pose.position.y = t.y;
+      m.pose.position.z = t.z;
+      m.pose.orientation.w = 1.0;
+      m.scale.x = 0.25;
+      m.scale.y = 0.25;
+      m.scale.z = 0.25;
+      m.color.r = r;
+      m.color.g = g;
+      m.color.b = b;
+      m.color.a = 1.0;
+      m.lifetime = ros::Duration(0.2);
+      ma.markers.push_back(m);
+
+      // Text marker (ID)
+      visualization_msgs::Marker tx;
+      tx.header = m.header;
+      tx.ns = "people_text";
+      tx.id = t.id * 10 + 1;
+      tx.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+      tx.action = visualization_msgs::Marker::ADD;
+      tx.pose.position.x = t.x;
+      tx.pose.position.y = t.y;
+      tx.pose.position.z = t.z + 0.35;
+      tx.pose.orientation.w = 1.0;
+      tx.scale.z = 0.22;
+      tx.color.r = 1.0;
+      tx.color.g = 1.0;
+      tx.color.b = 1.0;
+      tx.color.a = 1.0;
+      tx.text = "ID:" + std::to_string(t.id);
+      tx.lifetime = ros::Duration(0.2);
+      ma.markers.push_back(tx);
+    }
+
+    // Optional: publish colored cluster points for each detection (debug)
+    if (publish_cluster_points_)
+    {
+      for (size_t di = 0; di < dets.size(); ++di)
+      {
+        int tid = det_to_track_.count((int)di) ? det_to_track_[(int)di] : -1;
+        if (tid < 0) continue;
+
+        float r,g,b;
+        float hue = std::fmod((tid * 0.61803398875f), 1.0f);
+        hsvToRgb(hue, 0.85f, 0.95f, r, g, b);
+
+        visualization_msgs::Marker pm;
+        pm.header.stamp = stamp;
+        pm.header.frame_id = base_frame_;
+        pm.ns = "people_points";
+        pm.id = tid * 10 + 2;
+        pm.type = visualization_msgs::Marker::POINTS;
+        pm.action = visualization_msgs::Marker::ADD;
+        pm.scale.x = 0.05;
+        pm.scale.y = 0.05;
+        pm.color.r = r;
+        pm.color.g = g;
+        pm.color.b = b;
+        pm.color.a = 1.0;
+        pm.lifetime = ros::Duration(0.2);
+
+        pm.points.reserve(dets[di].point_indices.size());
+        for (int pi : dets[di].point_indices)
+        {
+          // We don't store full point list here (to keep code minimal).
+          // In practice, you can publish fused cloud and inspect clusters there.
+          // This marker is left as a placeholder if you want to extend it.
+          (void)pi;
+        }
+        // NOTE: Not pushing points to avoid storing fused points in member variable.
+        // You can extend this if you want per-cluster points markers.
+        // ma.markers.push_back(pm);
+      }
+    }
+
+    pub_markers_.publish(ma);
+  }
+
+  void publishFusedCloud(const ros::Time &stamp, const std::vector<PointXYZ> &points)
+  {
+    sensor_msgs::PointCloud2 cloud;
+    cloud.header.stamp = stamp;
+    cloud.header.frame_id = base_frame_;
+    cloud.height = 1;
+    cloud.width = points.size();
+    cloud.is_dense = false;
+    cloud.is_bigendian = false;
+
+    sensor_msgs::PointCloud2Modifier mod(cloud);
+    mod.setPointCloud2FieldsByString(1, "xyz");
+    mod.resize(points.size());
+
+    sensor_msgs::PointCloud2Iterator<float> it_x(cloud, "x");
+    sensor_msgs::PointCloud2Iterator<float> it_y(cloud, "y");
+    sensor_msgs::PointCloud2Iterator<float> it_z(cloud, "z");
+
+    for (size_t i = 0; i < points.size(); ++i, ++it_x, ++it_y, ++it_z)
+    {
+      *it_x = points[i].x;
+      *it_y = points[i].y;
+      *it_z = points[i].z;
+    }
+
+    pub_cloud_.publish(cloud);
+  }
+
+private:
+  ros::NodeHandle nh_;
+  ros::NodeHandle pnh_;
+
+  std::string scan1_topic_;
+  std::string scan2_topic_;
+  std::string base_frame_;
+
+  double range_min_;
+  double range_max_;
+
+  double cluster_eps_;
+  int cluster_min_pts_;
+  int cluster_max_pts_;
+
+  double cluster_min_width_;
+  double cluster_max_width_;
+
+  double candidate_min_dist_;
+  double candidate_max_dist_;
+
+  double track_gate_dist_;
+  double track_timeout_;
+
+  bool publish_fused_cloud_;
+  bool publish_cluster_points_;
+
+  tf2_ros::Buffer tf_buffer_;
+  tf2_ros::TransformListener tf_listener_;
+
+  ros::Publisher pub_candidates_;
+  ros::Publisher pub_tracks_;
+  ros::Publisher pub_markers_;
+  ros::Publisher pub_cloud_;
+
+  std::unique_ptr<message_filters::Subscriber<sensor_msgs::LaserScan>> sub_scan1_;
+  std::unique_ptr<message_filters::Subscriber<sensor_msgs::LaserScan>> sub_scan2_;
+  std::unique_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
+
+  std::vector<Track> tracks_;
+  int next_track_id_ = 1;
+
+  std::unordered_map<int,int> det_to_track_; // det index -> track id
+};
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, "lidar_people_cluster_node");
+  LidarPeopleClusterNode node;
+  ros::spin();
+  return 0;
+}

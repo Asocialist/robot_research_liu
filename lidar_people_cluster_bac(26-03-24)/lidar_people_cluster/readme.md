@@ -1,0 +1,4 @@
+# manual
+
+roslaunch lidar_people_cluster lidar_people_cluster.launch
+roslaucnh lidar_people_cluster_viewer opencv_viewer.launch

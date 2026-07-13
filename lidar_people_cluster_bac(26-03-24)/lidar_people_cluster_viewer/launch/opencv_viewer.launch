@@ -1,0 +1,16 @@
+<launch>
+  <node pkg="lidar_people_cluster_viewer"
+        type="opencv_viewer_node"
+        name="opencv_viewer_node"
+        output="screen">
+    <param name="cloud_topic" value="/scan_fused_cloud" />
+    <param name="marker_topic" value="/people_markers" />
+
+    <param name="image_size" value="800" />
+    <param name="pixels_per_meter" value="150.0" />
+    <param name="draw_range_m" value="6.0" />
+
+    <param name="draw_axes" value="true" />
+    <param name="draw_grid" value="false" />
+  </node>
+</launch>

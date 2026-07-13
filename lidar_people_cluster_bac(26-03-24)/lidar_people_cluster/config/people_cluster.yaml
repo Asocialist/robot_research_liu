@@ -1,0 +1,23 @@
+scan1_topic: /scan1
+scan2_topic: /scan2
+base_frame: base_link
+
+range_min: 0.05
+range_max: 12.0
+
+cluster_eps: 0.15
+cluster_min_pts: 8
+cluster_max_pts: 200
+
+# Shoulder / upper-body blob width (tune!)
+cluster_min_width: 0.20
+cluster_max_width: 0.90
+
+candidate_min_dist: 0.3
+candidate_max_dist: 6.0
+
+track_gate_dist: 0.60
+track_timeout: 0.8
+
+publish_fused_cloud: true
+publish_cluster_points: false

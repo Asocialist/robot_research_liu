@@ -1,0 +1,262 @@
+#include <ros/ros.h>
+
+#include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/point_cloud2_iterator.h>
+#include <visualization_msgs/MarkerArray.h>
+
+#include <opencv2/opencv.hpp>
+
+#include <mutex>
+#include <vector>
+#include <string>
+#include <cmath>
+
+struct Pt2
+{
+  float x;
+  float y;
+};
+
+class OpenCVViewerNode
+{
+public:
+  OpenCVViewerNode()
+  : nh_(), pnh_("~")
+  {
+    // Parameters
+    pnh_.param<std::string>("cloud_topic", cloud_topic_, "/scan_fused_cloud");
+    pnh_.param<std::string>("marker_topic", marker_topic_, "/people_markers");
+
+    pnh_.param<std::string>("base_frame", base_frame_, "base_link");
+
+    pnh_.param<int>("image_size", image_size_, 800);
+    pnh_.param<double>("pixels_per_meter", ppm_, 150.0);
+
+    pnh_.param<double>("draw_range_m", draw_range_m_, 6.0);  // +/- range in meters
+    pnh_.param<int>("point_radius", point_radius_, 1);
+    pnh_.param<int>("person_radius", person_radius_, 6);
+
+    pnh_.param<bool>("draw_axes", draw_axes_, true);
+    pnh_.param<bool>("draw_grid", draw_grid_, false);
+
+    // Subscribers
+    sub_cloud_ = nh_.subscribe(cloud_topic_, 1, &OpenCVViewerNode::onCloud, this);
+    sub_markers_ = nh_.subscribe(marker_topic_, 1, &OpenCVViewerNode::onMarkers, this);
+
+    // OpenCV window
+    window_name_ = "lidar_top_view";
+    cv::namedWindow(window_name_, cv::WINDOW_NORMAL);
+    cv::resizeWindow(window_name_, image_size_, image_size_);
+
+    ROS_INFO("opencv_viewer_node started. cloud=%s markers=%s",
+             cloud_topic_.c_str(), marker_topic_.c_str());
+  }
+
+  void spin()
+  {
+    ros::Rate rate(30);
+    while (ros::ok())
+    {
+      ros::spinOnce();
+      renderOnce();
+      rate.sleep();
+    }
+  }
+
+private:
+  void onCloud(const sensor_msgs::PointCloud2ConstPtr &msg)
+  {
+    // English comment:
+    // Store x/y points from PointCloud2 (xyz) for later rendering.
+    std::lock_guard<std::mutex> lk(mtx_);
+
+    last_stamp_ = msg->header.stamp;
+    last_frame_ = msg->header.frame_id;
+
+    points_.clear();
+    points_.reserve(msg->width * msg->height);
+
+    sensor_msgs::PointCloud2ConstIterator<float> it_x(*msg, "x");
+    sensor_msgs::PointCloud2ConstIterator<float> it_y(*msg, "y");
+    sensor_msgs::PointCloud2ConstIterator<float> it_z(*msg, "z");
+
+    const double r2 = draw_range_m_ * draw_range_m_;
+
+    for (; it_x != it_x.end(); ++it_x, ++it_y, ++it_z)
+    {
+      const float x = *it_x;
+      const float y = *it_y;
+      const float z = *it_z;
+
+      (void)z;
+
+      if (!std::isfinite(x) || !std::isfinite(y)) continue;
+      if (x * x + y * y > r2) continue;
+
+      points_.push_back({x, y});
+    }
+  }
+
+  void onMarkers(const visualization_msgs::MarkerArrayConstPtr &msg)
+  {
+    // English comment:
+    // Store marker array for rendering people positions with colors.
+    std::lock_guard<std::mutex> lk(mtx_);
+    markers_ = *msg;
+  }
+
+  cv::Point worldToPixel(double x, double y) const
+  {
+    // English comment:
+    // base_link convention: x forward, y left.
+    // Image: x to right, y up => v needs flip.
+    const double cx = image_size_ * 0.5;
+    const double cy = image_size_ * 0.5;
+
+    int u = static_cast<int>(std::lround(cx + x * ppm_));
+    int v = static_cast<int>(std::lround(cy - y * ppm_));
+    return cv::Point(u, v);
+  }
+
+  void drawGrid(cv::Mat &img) const
+  {
+    // English comment:
+    // Draw 1m grid lines for debugging scale.
+    const int step_px = static_cast<int>(std::lround(ppm_));
+    const cv::Point c(image_size_ / 2, image_size_ / 2);
+
+    for (int dx = step_px; dx < image_size_ / 2; dx += step_px)
+    {
+      cv::line(img, cv::Point(c.x + dx, 0), cv::Point(c.x + dx, image_size_ - 1), cv::Scalar(30, 30, 30), 1);
+      cv::line(img, cv::Point(c.x - dx, 0), cv::Point(c.x - dx, image_size_ - 1), cv::Scalar(30, 30, 30), 1);
+    }
+    for (int dy = step_px; dy < image_size_ / 2; dy += step_px)
+    {
+      cv::line(img, cv::Point(0, c.y + dy), cv::Point(image_size_ - 1, c.y + dy), cv::Scalar(30, 30, 30), 1);
+      cv::line(img, cv::Point(0, c.y - dy), cv::Point(image_size_ - 1, c.y - dy), cv::Scalar(30, 30, 30), 1);
+    }
+  }
+
+  void drawAxes(cv::Mat &img) const
+  {
+    // English comment:
+    // Draw robot center and axes: +x (forward) in red, +y (left) in green.
+    const cv::Point c(image_size_ / 2, image_size_ / 2);
+    cv::circle(img, c, 4, cv::Scalar(200, 200, 200), -1);
+
+    cv::Point x_end = worldToPixel(1.0, 0.0);
+    cv::Point y_end = worldToPixel(0.0, 1.0);
+
+    cv::arrowedLine(img, c, x_end, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+    cv::arrowedLine(img, c, y_end, cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
+  }
+
+  void renderOnce()
+  {
+    std::vector<Pt2> pts;
+    visualization_msgs::MarkerArray mk;
+    ros::Time stamp;
+    std::string frame;
+
+    {
+      std::lock_guard<std::mutex> lk(mtx_);
+      pts = points_;
+      mk = markers_;
+      stamp = last_stamp_;
+      frame = last_frame_;
+    }
+
+    // Create canvas
+    cv::Mat img(image_size_, image_size_, CV_8UC3, cv::Scalar(0, 0, 0));
+
+    if (draw_grid_) drawGrid(img);
+    if (draw_axes_) drawAxes(img);
+
+    // Draw fused points
+    for (const auto &p : pts)
+    {
+      const cv::Point uv = worldToPixel(p.x, p.y);
+      if (uv.x < 0 || uv.x >= image_size_ || uv.y < 0 || uv.y >= image_size_) continue;
+      cv::circle(img, uv, point_radius_, cv::Scalar(180, 180, 180), -1);
+    }
+
+    // Draw people from markers (use sphere + color)
+    // English comment:
+    // We draw markers with ns="people" and type SPHERE as colored circles.
+    for (const auto &m : mk.markers)
+    {
+      if (m.action == visualization_msgs::Marker::DELETEALL) continue;
+      if (m.ns != "people") continue;
+      if (m.type != visualization_msgs::Marker::SPHERE) continue;
+
+      const double x = m.pose.position.x;
+      const double y = m.pose.position.y;
+
+      cv::Point uv = worldToPixel(x, y);
+      if (uv.x < 0 || uv.x >= image_size_ || uv.y < 0 || uv.y >= image_size_) continue;
+
+      // OpenCV uses BGR
+      const int b = static_cast<int>(std::lround(m.color.b * 255.0));
+      const int g = static_cast<int>(std::lround(m.color.g * 255.0));
+      const int r = static_cast<int>(std::lround(m.color.r * 255.0));
+
+      cv::circle(img, uv, person_radius_, cv::Scalar(b, g, r), -1, cv::LINE_AA);
+      cv::circle(img, uv, person_radius_ + 2, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+
+      // Draw ID text based on marker id mapping (id = track_id*10 + 0)
+      int track_id = m.id / 10;
+      std::string label = "ID:" + std::to_string(track_id);
+
+      cv::putText(img, label, uv + cv::Point(8, -8),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+    }
+
+    // Header text
+    std::string info = "frame:" + frame + "  points:" + std::to_string(pts.size());
+    cv::putText(img, info, cv::Point(10, 25),
+                cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+
+    cv::imshow(window_name_, img);
+
+    int key = cv::waitKey(1);
+    if (key == 'q' || key == 27)
+    {
+      ros::shutdown();
+    }
+  }
+
+private:
+  ros::NodeHandle nh_;
+  ros::NodeHandle pnh_;
+
+  ros::Subscriber sub_cloud_;
+  ros::Subscriber sub_markers_;
+
+  std::string cloud_topic_;
+  std::string marker_topic_;
+  std::string base_frame_;
+
+  int image_size_;
+  double ppm_;
+  double draw_range_m_;
+  int point_radius_;
+  int person_radius_;
+  bool draw_axes_;
+  bool draw_grid_;
+
+  std::string window_name_;
+
+  std::mutex mtx_;
+  std::vector<Pt2> points_;
+  visualization_msgs::MarkerArray markers_;
+  ros::Time last_stamp_;
+  std::string last_frame_;
+};
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, "opencv_viewer_node");
+  OpenCVViewerNode node;
+  node.spin();
+  return 0;
+}
