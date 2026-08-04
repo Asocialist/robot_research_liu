@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import argparse
+import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 from pathlib import Path
+
+import matplotlib
+
+if not os.environ.get("DISPLAY"):
+    matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR.parent / "data"   # ../data
 
-def load_person_traj():
-    person_csv = DATA_DIR / "person_traj.csv"
+def load_person_traj(data_dir):
+    person_csv = Path(data_dir) / "person_traj.csv"
     if not person_csv.exists():
         raise FileNotFoundError(f"找不到CSV: {person_csv}")
     df = pd.read_csv(person_csv)
@@ -32,7 +39,7 @@ def load_person_traj():
 
     return df
 
-def plot_person_traj(df):
+def plot_person_traj(df, data_dir, show=True):
     if df.empty:
         raise ValueError("DataFrame 为空，无法绘图。")
 
@@ -79,13 +86,23 @@ def plot_person_traj(df):
     # 底部留白，避免图例被裁掉
     plt.tight_layout(rect=[0, 0.08, 1, 1])
 
-    out_path = DATA_DIR / "person_trajectory.png"
+    out_path = Path(data_dir) / "person_trajectory.png"
     plt.savefig(out_path, dpi=200)
     print(f"已保存: {out_path}")
-    plt.show()
+    if show:
+        plt.show()
+    plt.close()
 
-if __name__ == "__main__":
-    df = load_person_traj()
+def main():
+    parser = argparse.ArgumentParser(description="绘制人物轨迹图")
+    parser.add_argument("--data-dir", default=str(DATA_DIR), help="输入/输出数据目录")
+    parser.add_argument("--no-show", action="store_true", help="仅保存图片，不弹出窗口")
+    args = parser.parse_args()
+
+    df = load_person_traj(args.data_dir)
     print("轨迹数据前5行：")
     print(df.head())
-    plot_person_traj(df)
+    plot_person_traj(df, args.data_dir, show=not args.no_show)
+
+if __name__ == "__main__":
+    main()

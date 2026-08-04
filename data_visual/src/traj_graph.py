@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import argparse
+import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from pathlib import Path
+
+import matplotlib
+
+if not os.environ.get("DISPLAY"):
+    matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR.parent / "data"   # ../data
 
-def load_robot_traj():
-    robot_csv = DATA_DIR / "robot_traj.csv"
+def load_robot_traj(data_dir):
+    robot_csv = Path(data_dir) / "robot_traj.csv"
     if not robot_csv.exists():
         raise FileNotFoundError(f"找不到CSV: {robot_csv}")
     
@@ -26,7 +33,7 @@ def load_robot_traj():
 
     return df
 
-def plot_robot_traj(df):
+def plot_robot_traj(df, data_dir, show=True):
     if df.empty:
         raise ValueError("DataFrame is empty exit")
 
@@ -72,15 +79,24 @@ def plot_robot_traj(df):
     plt.axis("equal")
     plt.grid(True)
 
-    out_path = DATA_DIR / "robot_trajectory.png"
+    out_path = Path(data_dir) / "robot_trajectory.png"
     plt.savefig(out_path, dpi=200)
     print(f"已保存: {out_path}")
 
-    plt.show()
+    if show:
+        plt.show()
+    plt.close()
 
+def main():
+    parser = argparse.ArgumentParser(description="绘制机器人轨迹图")
+    parser.add_argument("--data-dir", default=str(DATA_DIR), help="输入/输出数据目录")
+    parser.add_argument("--no-show", action="store_true", help="仅保存图片，不弹出窗口")
+    args = parser.parse_args()
 
-if __name__ == "__main__":   
-    df = load_robot_traj()
+    df = load_robot_traj(args.data_dir)
     print("轨迹数据前5行：")
     print(df.head())
-    plot_robot_traj(df)
+    plot_robot_traj(df, args.data_dir, show=not args.no_show)
+
+if __name__ == "__main__":
+    main()

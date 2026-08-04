@@ -2,18 +2,23 @@
 # -*- coding: utf-8 -*-
 
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
+import argparse
+import os
 from pathlib import Path
 
-def plot_xy(draw_orientation=True, step=20):
-    # 获取当前脚本所在目录
-    BASE_DIR = Path(__file__).resolve().parent
-    DATA_DIR = BASE_DIR.parent / "data"   # ../data
+import matplotlib
+
+if not os.environ.get("DISPLAY"):
+    matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+def plot_xy(data_dir, draw_orientation=True, step=20, show=True):
+    data_dir = Path(data_dir)
 
     # CSV 文件路径
-    person_csv = DATA_DIR / "person_traj.csv"
-    robot_csv  = DATA_DIR / "robot_traj.csv"
+    person_csv = data_dir / "person_traj.csv"
+    robot_csv  = data_dir / "robot_traj.csv"
 
     # 读取数据
     person = pd.read_csv(person_csv)
@@ -55,11 +60,22 @@ def plot_xy(draw_orientation=True, step=20):
     plt.tight_layout()
 
     # 保存到 data 文件夹下
-    out_path = DATA_DIR / "xy_trajectory_with_theta.png"
+    out_path = data_dir / "xy_trajectory_with_theta.png"
     plt.savefig(out_path, dpi=200)
-    plt.show()
+    if show:
+        plt.show()
+    plt.close()
     print(f"✅ 带朝向的轨迹图已保存到: {out_path}")
 
+def main():
+    parser = argparse.ArgumentParser(description="绘制基础版机器人/人物轨迹图")
+    parser.add_argument("--data-dir", default=str(Path(__file__).resolve().parent.parent / "data"),
+                        help="输入/输出数据目录")
+    parser.add_argument("--step", type=int, default=20, help="箭头步长（每N点画一次）")
+    parser.add_argument("--no-arrow", action="store_true", help="关闭朝向箭头")
+    parser.add_argument("--no-show", action="store_true", help="仅保存图片，不弹出窗口")
+    args = parser.parse_args()
+    plot_xy(args.data_dir, draw_orientation=not args.no_arrow, step=args.step, show=not args.no_show)
+
 if __name__ == "__main__":
-    # 默认开启画朝向，步长=20（即每20帧画一个箭头）
-    plot_xy(draw_orientation=True, step=20)
+    main()

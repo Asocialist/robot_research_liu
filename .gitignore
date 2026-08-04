@@ -3,3 +3,11 @@
 tmp/catkin_ws_liu_bac/icartmini_sbtp/
 tmp/catkin_ws_liu_bac/nkm_destination_queue/
 tmp/sks_fformation_move/
+
+# Local build and Python cache artifacts
+build/
+**/__pycache__/
+*.py[cod]
+
+# Generated trajectory CSV and image outputs
+data_visual/data*/
